@@ -1371,9 +1371,8 @@ static int mdp_ppp_blit_addr(struct fb_info *info, struct mdp_blit_req *req,
 
 	iBuf.mdpImg.width = req->src.width;
 	iBuf.mdpImg.imgType = req->src.format;
-
-
 	iBuf.mdpImg.bmy_addr = (uint32 *) (srcp0_start + req->src.offset);
+
 	if (iBuf.mdpImg.imgType == MDP_Y_CBCR_H2V2_ADRENO)
 		iBuf.mdpImg.cbcr_addr =
 			(uint32 *) ((uint32) iBuf.mdpImg.bmy_addr +

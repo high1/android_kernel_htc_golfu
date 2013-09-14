@@ -404,6 +404,81 @@ void htc_mdp_sem_up(struct semaphore *mutex)
 	up(mutex);
 }
 
+static ssize_t msm_fb_xres(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	ssize_t ret = strnlen(buf, PAGE_SIZE);
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+
+	ret = snprintf(buf, PAGE_SIZE, "%d\n", mfd->panel_info.xres);
+	buf[strnlen(buf, PAGE_SIZE) + 1] = '\0';
+	return ret;
+}
+static DEVICE_ATTR(xres, S_IRUGO, msm_fb_xres, NULL);
+static struct attribute *xres_fs_attrs[] = {
+	&dev_attr_xres.attr,
+	NULL,
+};
+static struct attribute_group xres_fs_attr_group = {
+	.attrs = xres_fs_attrs,
+};
+
+static ssize_t msm_fb_yres(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	ssize_t ret = strnlen(buf, PAGE_SIZE);
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+
+	ret = snprintf(buf, PAGE_SIZE, "%d\n", mfd->panel_info.yres);
+	buf[strnlen(buf, PAGE_SIZE) + 1] = '\0';
+	return ret;
+}
+static DEVICE_ATTR(yres, S_IRUGO, msm_fb_yres, NULL);
+static struct attribute *yres_fs_attrs[] = {
+	&dev_attr_yres.attr,
+	NULL,
+};
+static struct attribute_group yres_fs_attr_group = {
+	.attrs = yres_fs_attrs,
+};
+
+static int msm_fb_resolution_sysfs(struct platform_device *pdev)
+{
+	int rc;
+	struct msm_fb_data_type *mfd = platform_get_drvdata(pdev);
+
+	if (!mfd) {
+		pr_err("%s: mfd not found\n", __func__);
+		return -ENODEV;
+	}
+	if (!mfd->fbi) {
+		pr_err("%s: mfd->fbi not found\n", __func__);
+		return -ENODEV;
+	}
+	if (!mfd->fbi->dev) {
+		pr_err("%s: mfd->fbi->dev not found\n", __func__);
+		return -ENODEV;
+	}
+	rc = sysfs_create_group(&mfd->fbi->dev->kobj,
+		&xres_fs_attr_group);
+	if (rc) {
+		pr_err("%s: sysfs group creation failed, rc=%d\n",
+			__func__, rc);
+		return rc;
+	}
+
+	rc = sysfs_create_group(&mfd->fbi->dev->kobj,
+		&yres_fs_attr_group);
+	if (rc) {
+		pr_err("%s: sysfs group creation failed, rc=%d\n",
+			__func__, rc);
+		return rc;
+	}
+	return 0;
+}
+
 static int msm_fb_probe(struct platform_device *pdev)
 {
 	struct msm_fb_data_type *mfd;
@@ -452,6 +527,7 @@ static int msm_fb_probe(struct platform_device *pdev)
 	if (pdev_list_cnt >= MSM_FB_MAX_DEV_LIST)
 		return -ENOMEM;
 
+	vsync_cntrl.dev = mfd->fbi->dev;
 	mfd->panel_info.frame_count = 0;
 #if 1 /* HTC_CSP_START */
 	mfd->width = msm_fb_pdata->width;
@@ -482,6 +558,8 @@ static int msm_fb_probe(struct platform_device *pdev)
 
 	pdev_list[pdev_list_cnt++] = pdev;
 	msm_fb_create_sysfs(pdev);
+	msm_fb_resolution_sysfs(pdev);
+	
 	if (mfd->timeline == NULL) {
 		mfd->timeline = sw_sync_timeline_create("mdp-timeline");
 		if (mfd->timeline == NULL) {
@@ -2838,6 +2916,27 @@ static int msmfb_blit(struct fb_info *info, void __user *p)
 	return 0;
 }
 
+static int msmfb_vsync_ctrl(struct fb_info *info, void __user *argp)
+{
+	int enable, ret;
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
+
+	ret = copy_from_user(&enable, argp, sizeof(enable));
+	if (ret) {
+		pr_err("%s:msmfb_overlay_vsync ioctl failed", __func__);
+		return ret;
+	}
+
+	if (mfd->vsync_ctrl)
+		mfd->vsync_ctrl(enable);
+	else {
+		pr_err("%s: Vsync IOCTL not supported", __func__);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 #ifdef CONFIG_FB_MSM_OVERLAY
 static int msmfb_overlay_get(struct fb_info *info, void __user *p)
 {
@@ -2898,6 +2997,22 @@ static int msmfb_overlay_unset(struct fb_info *info, unsigned long *argp)
 	}
 
 	return mdp4_overlay_unset(info, ndx);
+}
+
+static int msmfb_overlay_vsync_ctrl(struct fb_info *info, void __user *argp)
+{
+	int ret;
+	int enable;
+
+	ret = copy_from_user(&enable, argp, sizeof(enable));
+	if (ret) {
+		pr_err("%s:msmfb_overlay_vsync ioctl failed", __func__);
+		return ret;
+	}
+
+	ret = mdp4_overlay_vsync_ctrl(info, enable);
+
+	return ret;
 }
 
 static int msmfb_overlay_play_wait(struct fb_info *info, unsigned long *argp)
@@ -3431,6 +3546,7 @@ static int msm_fb_ioctl(struct fb_info *info, unsigned int cmd,
 	struct msmfb_mdp_pp mdp_pp;
 	struct msmfb_metadata mdp_metadata;
 	struct mdp_buf_sync buf_sync;
+
 	int ret = 0;
 
 	switch (cmd) {
@@ -3508,6 +3624,15 @@ static int msm_fb_ioctl(struct fb_info *info, unsigned int cmd,
 		ret = msmfb_overlay_ioctl_writeback_terminate(info);
 		break;
 #endif
+	case MSMFB_VSYNC_CTRL:
+	case MSMFB_OVERLAY_VSYNC_CTRL:
+		down(&msm_fb_ioctl_ppp_sem);
+		if (mdp_rev >= MDP_REV_40)
+			ret = msmfb_overlay_vsync_ctrl(info, argp);
+		else
+			ret = msmfb_vsync_ctrl(info, argp);
+		up(&msm_fb_ioctl_ppp_sem);
+		break;
 	case MSMFB_BLIT:
 		down(&msm_fb_ioctl_ppp_sem);
 		ret = msmfb_blit(info, argp);
@@ -3733,6 +3858,7 @@ static int msm_fb_ioctl(struct fb_info *info, unsigned int cmd,
 		if (ret)
 			return ret;
 		ret = msmfb_handle_metadata_ioctl(mfd, &mdp_metadata);
+		
 	case MSMFB_DISPLAY_COMMIT:
 		ret = msmfb_display_commit(info, argp);
 		break;
