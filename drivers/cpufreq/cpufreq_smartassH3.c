@@ -183,7 +183,7 @@ static int cpufreq_governor_smartass_h3(struct cpufreq_policy *policy,
 static
 #endif
 struct cpufreq_governor cpufreq_gov_smartass_h3 = {
-	.name = "SmartassH3",
+	.name = "smartassH3",
 	.governor = cpufreq_governor_smartass_h3,
 	.max_transition_latency = 9000000,
 	.owner = THIS_MODULE,
