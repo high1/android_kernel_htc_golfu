@@ -1139,14 +1139,12 @@ static int32_t s5k4e1_power_down(void)
 	return 0;
 }
 
-#if 0
 static int s5k4e1_probe_init_done(const struct msm_camera_sensor_info *data)
 {
 	pr_info("probe done\n");
 	gpio_free(data->sensor_reset);
 	return 0;
 }
-#endif
 
 static int s5k4e1_probe_init_sensor(const struct msm_camera_sensor_info *data)
 {
@@ -1811,8 +1809,6 @@ static int s5k4e1_sensor_probe(const struct msm_camera_sensor_info *info,
 
 	msm_camio_clk_rate_set(S5K4E1_MASTER_CLK_RATE);
 
-	msleep(2);
-
 	rc = s5k4e1_probe_init_sensor(info);
 	if (rc < 0)
 		goto probe_fail_3;
@@ -1820,18 +1816,9 @@ static int s5k4e1_sensor_probe(const struct msm_camera_sensor_info *info,
 	s->s_init = s5k4e1_sensor_open_init;
 	s->s_release = s5k4e1_sensor_release;
 	s->s_config  = s5k4e1_sensor_config;
-    msleep(2);
-	gpio_set_value(info->sensor_reset, 0);
-	msleep(1);//shuji 0119
-/* HTC START */
-#if 0
 	s->s_mount_angle = info->sensor_platform_info->mount_angle;
 	gpio_set_value_cansleep(info->sensor_reset, 0);
 	s5k4e1_probe_init_done(info);
-#endif
-/* HTC_END */
-
-#if 0 /* Mark it due to this action is not done at probe stage */
 	/* Keep vcm_pwd to OUT Low */
 	if (info->vcm_enable) {
 		rc = gpio_request(info->vcm_pwd, "s5k4e1_af");
@@ -1842,7 +1829,6 @@ static int s5k4e1_sensor_probe(const struct msm_camera_sensor_info *info,
 		} else
 			return rc;
 	}
-#endif
 	/* HTC_START */
 	s5k4e1gx_sysfs_init();
 	pr_info("[CAM]s5k4e1_sensor_probe: SENSOR PROBE OK!\n");
