@@ -1,4 +1,7 @@
 # Makefile for the Linux device tree
+NOSTDINC_FLAGS := -I$(srctree)/include/compat/ \
+        -include $(srctree)/include/compat/linux/compat-2.6.h \
+        $(CFLAGS)
 
 obj-y			:= core.o sys.o bus.o dd.o syscore.o \
 			   driver.o class.o platform.o \
@@ -19,6 +22,9 @@ ifeq ($(CONFIG_SYSFS),y)
 obj-$(CONFIG_MODULES)	+= module.o
 endif
 obj-$(CONFIG_SYS_HYPERVISOR) += hypervisor.o
+
+obj-$(CONFIG_SYNC)	+= sync.o
+obj-$(CONFIG_SW_SYNC)	+= sw_sync.o
 
 ccflags-$(CONFIG_DEBUG_DRIVER) := -DDEBUG
 
