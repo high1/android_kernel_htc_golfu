@@ -671,7 +671,7 @@ static struct platform_device msm_lcdc_device = {
 	.name   = "lcdc",
 	.id     = 0,
 };
-#ifdef CONFIG_MSM_KGSL_ADRENO200
+#ifdef CONFIG_MSM_KGSL
 static struct resource kgsl_3d0_resources[] = {
 	{
 		.name  = KGSL_3D0_REG_MEMORY,

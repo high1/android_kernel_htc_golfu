@@ -31,6 +31,17 @@ int pm_qos_requirement(int qos);
 
 int pm_qos_add_notifier(int qos, struct notifier_block *notifier);
 int pm_qos_remove_notifier(int qos, struct notifier_block *notifier);
+
+struct pm_qos_request {
+	struct plist_node node;
+	int pm_qos_class;
+	struct delayed_work work; /* for pm_qos_update_request_timeout */
+};
+
+struct dev_pm_qos_request {
+	struct plist_node node;
+	struct device *dev;
+};
 #endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25)) */
 
 #endif
