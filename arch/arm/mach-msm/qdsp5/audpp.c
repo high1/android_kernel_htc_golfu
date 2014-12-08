@@ -4,7 +4,7 @@
  * common code to deal with the AUDPP dsp task (audio postproc)
  *
  * Copyright (C) 2008 Google, Inc.
- * Copyright (c) 2009-2010, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2009-2010, 2012-2013 The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -34,6 +34,8 @@
 
 #include <mach/qdsp5/qdsp5audppcmdi.h>
 #include <mach/qdsp5/qdsp5audppmsg.h>
+#include <mach/qdsp5/qdsp5audpp.h>
+#include <mach/qdsp5/audio_acdbi.h>
 #include <mach/debug_mm.h>
 
 #include "evlog.h"
@@ -67,35 +69,31 @@ module_init(_dsp_log_init);
 static DEFINE_MUTEX(audpp_lock);
 static DEFINE_MUTEX(audpp_dec_lock);
 
-#define CH_COUNT               5
-#define AUDPP_CLNT_MAX_COUNT   6 
+#define CH_COUNT 5
+#define AUDPP_CLNT_MAX_COUNT 6
 #define AUDPP_AVSYNC_INFO_SIZE 7
 
+#define AUDPP_SRS_PARAMS 2
+#define AUDPP_SRS_PARAMS_G 0
+#define AUDPP_SRS_PARAMS_W 1
+#define AUDPP_SRS_PARAMS_C 2
+#define AUDPP_SRS_PARAMS_H 3
+#define AUDPP_SRS_PARAMS_P 4
+#define AUDPP_SRS_PARAMS_L 5
+
 #define AUDPP_CMD_CFG_OBJ_UPDATE 0x8000
-#define AUDPP_CMD_EQ_FLAG_DIS    0x0000
-#define AUDPP_CMD_EQ_FLAG_ENA    -1
-#define AUDPP_CMD_IIR_FLAG_DIS   0x0000
-#define AUDPP_CMD_IIR_FLAG_ENA   -1
+#define AUDPP_CMD_EQ_FLAG_DIS	0x0000
+#define AUDPP_CMD_EQ_FLAG_ENA	-1
+#define AUDPP_CMD_IIR_FLAG_DIS	  0x0000
+#define AUDPP_CMD_IIR_FLAG_ENA	  -1
 
-#define AUDPP_CMD_VOLUME_PAN                 0
-#define AUDPP_CMD_IIR_TUNING_FILTER          1
-#define AUDPP_CMD_EQUALIZER                  2
-#define AUDPP_CMD_ADRC                       3
-#define AUDPP_CMD_SPECTROGRAM                4
-#define AUDPP_CMD_QCONCERT                   5
-#define AUDPP_CMD_SIDECHAIN_TUNING_FILTER    6
-#define AUDPP_CMD_SAMPLING_FREQUENCY         7
-#define AUDPP_CMD_QAFX                       8
-#define AUDPP_CMD_QRUMBLE                    9
-#define AUDPP_CMD_MBADRC                    10
+#define MAX_EVENT_CALLBACK_CLIENTS	2
 
-#define MAX_EVENT_CALLBACK_CLIENTS 	1
-
-#define AUDPP_CONCURRENCY_DEFAULT   6	/* All non tunnel mode */
-#define AUDPP_MAX_DECODER_CNT       5
-#define AUDPP_CODEC_MASK            0x000000FF
-#define AUDPP_MODE_MASK             0x00000F00
-#define AUDPP_OP_MASK               0xF0000000
+#define AUDPP_CONCURRENCY_DEFAULT 6	/* All non tunnel mode */
+#define AUDPP_MAX_DECODER_CNT 5
+#define AUDPP_CODEC_MASK 0x000000FF
+#define AUDPP_MODE_MASK 0x00000F00
+#define AUDPP_OP_MASK 0xF0000000
 
 struct audpp_decoder_info {
 	unsigned int codec;
@@ -123,6 +121,8 @@ struct audpp_state {
 	/* flags, 48 bits sample/bytes counter per channel */
 	uint16_t avsync[CH_COUNT * AUDPP_CLNT_MAX_COUNT + 1];
 	struct audpp_event_callback *cb_tbl[MAX_EVENT_CALLBACK_CLIENTS];
+
+	spinlock_t avsync_lock;
 
 	wait_queue_head_t event_wait;
 };
@@ -176,12 +176,15 @@ int audpp_register_event_callback(struct audpp_event_callback *ecb)
 	struct audpp_state *audpp = &the_audpp_state;
 	int i;
 
+	mutex_lock(audpp->lock);
 	for (i = 0; i < MAX_EVENT_CALLBACK_CLIENTS; ++i) {
 		if (NULL == audpp->cb_tbl[i]) {
 			audpp->cb_tbl[i] = ecb;
+			mutex_unlock(audpp->lock);
 			return 0;
 		}
 	}
+	mutex_unlock(audpp->lock);
 	return -1;
 }
 EXPORT_SYMBOL(audpp_register_event_callback);
@@ -191,12 +194,15 @@ int audpp_unregister_event_callback(struct audpp_event_callback *ecb)
 	struct audpp_state *audpp = &the_audpp_state;
 	int i;
 
+	mutex_lock(audpp->lock);
 	for (i = 0; i < MAX_EVENT_CALLBACK_CLIENTS; ++i) {
 		if (ecb == audpp->cb_tbl[i]) {
 			audpp->cb_tbl[i] = NULL;
+			mutex_unlock(audpp->lock);
 			return 0;
 		}
 	}
+	mutex_unlock(audpp->lock);
 	return -1;
 }
 EXPORT_SYMBOL(audpp_unregister_event_callback);
@@ -205,9 +211,13 @@ static void audpp_broadcast(struct audpp_state *audpp, unsigned id,
 			    uint16_t *msg)
 {
 	unsigned n;
-	for (n = 0; n < AUDPP_CLNT_MAX_COUNT; n++) {
-		if (audpp->func[n])
-			audpp->func[n] (audpp->private[n], id, msg);
+
+	if ((id != AUDPP_MSG_PP_DISABLE_FEEDBACK) &&
+		(id != AUDPP_MSG_PP_FEATS_RE_ENABLE)) {
+		for (n = 0; n < AUDPP_CLNT_MAX_COUNT; n++) {
+			if (audpp->func[n])
+				audpp->func[n] (audpp->private[n], id, msg);
+		}
 	}
 
 	for (n = 0; n < MAX_EVENT_CALLBACK_CLIENTS; ++n)
@@ -237,13 +247,24 @@ static void audpp_handle_pcmdmamiss(struct audpp_state *audpp,
 	}
 }
 
+static void audpp_fake_event(struct audpp_state *audpp, int id,
+			     unsigned event, unsigned arg)
+{
+	uint16_t msg[1];
+	msg[0] = arg;
+	audpp->func[id] (audpp->private[id], event, msg);
+}
+
 static void audpp_dsp_event(void *data, unsigned id, size_t len,
 			    void (*getevent) (void *ptr, size_t len))
 {
 	struct audpp_state *audpp = data;
+	unsigned long flags;
 	uint16_t msg[8];
+	int cid = 0;
 
 	if (id == AUDPP_MSG_AVSYNC_MSG) {
+		spin_lock_irqsave(&audpp->avsync_lock, flags);
 		getevent(audpp->avsync, sizeof(audpp->avsync));
 
 		/* mask off any channels we're not watching to avoid
@@ -252,6 +273,7 @@ static void audpp_dsp_event(void *data, unsigned id, size_t len,
 		 * we next read...
 		 */
 		audpp->avsync[0] &= audpp->avsync_mask;
+		spin_unlock_irqrestore(&audpp->avsync_lock, flags);
 		return;
 	}
 
@@ -263,7 +285,7 @@ static void audpp_dsp_event(void *data, unsigned id, size_t len,
 	switch (id) {
 	case AUDPP_MSG_STATUS_MSG:{
 			unsigned cid = msg[0];
-		MM_AUD_INFO("audpp: status %d %d %d\n", cid, msg[1], msg[2]);
+			MM_DBG("status %d %d %d\n", cid, msg[1], msg[2]);
 			if ((cid < 5) && audpp->func[cid])
 				audpp->func[cid] (audpp->private[cid], id, msg);
 			break;
@@ -273,21 +295,36 @@ static void audpp_dsp_event(void *data, unsigned id, size_t len,
 			audpp->func[5] (audpp->private[5], id, msg);
 		break;
 	case AUDPP_MSG_PCMDMAMISSED:
-		MM_AUD_INFO("audpp: DMA missed\n");
 		audpp_handle_pcmdmamiss(audpp, msg[0]);
 		break;
 	case AUDPP_MSG_CFG_MSG:
 		if (msg[0] == AUDPP_MSG_ENA_ENA) {
-			MM_AUD_INFO("audpp: ENABLE\n");
-			audpp->enabled = 1;
-			audpp_broadcast(audpp, id, msg);
+			MM_INFO("ENABLE\n");
+			if (!audpp->enabled) {
+				audpp->enabled = 1;
+				wake_up(&audpp->event_wait);
+				audpp_broadcast(audpp, id, msg);
+			} else {
+				cid = msg[1];
+				audpp_fake_event(audpp, cid,
+					id, AUDPP_MSG_ENA_ENA);
+			}
+
 		} else if (msg[0] == AUDPP_MSG_ENA_DIS) {
-			MM_AUD_INFO("audpp: DISABLE\n");
-			audpp->enabled = 0;
-			wake_up(&audpp->event_wait);
-			audpp_broadcast(audpp, id, msg);
+			if (audpp->open_count == 0) {
+				MM_INFO("DISABLE\n");
+				audpp->enabled = 0;
+				wake_up(&audpp->event_wait);
+				audpp_broadcast(audpp, id, msg);
+			} else {
+				cid = msg[1];
+				audpp_fake_event(audpp, cid,
+					id, AUDPP_MSG_ENA_DIS);
+				audpp->func[cid] = NULL;
+				audpp->private[cid] = NULL;
+			}
 		} else {
-			MM_AUD_ERR("audpp: invalid config msg %d\n", msg[0]);
+			MM_ERR("invalid config msg %d\n", msg[0]);
 		}
 		break;
 	case AUDPP_MSG_ROUTING_ACK:
@@ -297,10 +334,23 @@ static void audpp_dsp_event(void *data, unsigned id, size_t len,
 		audpp_notify_clnt(audpp, msg[0], id, msg);
 		break;
 	case ADSP_MESSAGE_ID:
-		MM_AUD_DBG("Received ADSP event: module enable/disable(audpptask)");
+		MM_DBG("Received ADSP event: module enable/disable(audpptask)");
+		break;
+	case AUDPP_MSG_FEAT_QUERY_DM_DONE:
+		MM_INFO(" RTC ACK --> %x %x %x\n", msg[0],\
+			msg[1], msg[2]);
+		acdb_rtc_set_err(msg[2]);
+		break;
+	case AUDPP_MSG_PP_DISABLE_FEEDBACK:
+		MM_DBG("PP Disable feedback due to mips limitation");
+		audpp_broadcast(audpp, id, msg);
+		break;
+	case AUDPP_MSG_PP_FEATS_RE_ENABLE:
+		MM_DBG("Re-enable the disabled PP features");
+		audpp_broadcast(audpp, id, msg);
 		break;
 	default:
-		MM_AUD_INFO("audpp: unhandled msg id %x\n", id);
+		MM_ERR("unhandled msg id %x\n", id);
 	}
 }
 
@@ -308,18 +358,12 @@ static struct msm_adsp_ops adsp_ops = {
 	.event = audpp_dsp_event,
 };
 
-static void audpp_fake_event(struct audpp_state *audpp, int id,
-			     unsigned event, unsigned arg)
-{
-	uint16_t msg[1];
-	msg[0] = arg;
-	audpp->func[id](audpp->private[id], event, msg);
-}
-
 int audpp_enable(int id, audpp_event_func func, void *private)
 {
 	struct audpp_state *audpp = &the_audpp_state;
+	uint16_t msg[8];
 	int res = 0;
+	int rc;
 
 	if (id < -1 || id > 4)
 		return -EINVAL;
@@ -338,10 +382,10 @@ int audpp_enable(int id, audpp_event_func func, void *private)
 
 	LOG(EV_ENABLE, 1);
 	if (audpp->open_count++ == 0) {
-		MM_AUD_INFO("audpp: enable\n");
+		MM_DBG("enable\n");
 		res = msm_adsp_get("AUDPPTASK", &audpp->mod, &adsp_ops, audpp);
 		if (res < 0) {
-			MM_AUD_ERR("audpp: cannot open AUDPPTASK\n");
+			MM_ERR("cannot open AUDPPTASK\n");
 			audpp->open_count = 0;
 			audpp->func[id] = NULL;
 			audpp->private[id] = NULL;
@@ -350,13 +394,21 @@ int audpp_enable(int id, audpp_event_func func, void *private)
 		LOG(EV_ENABLE, 2);
 		msm_adsp_enable(audpp->mod);
 		audpp_dsp_config(1);
+		rc = wait_event_timeout(audpp->event_wait,
+					(audpp->enabled == 1),
+					3 * HZ);
+		if (rc == 0)
+			msm_adsp_dump(audpp->mod);
 	} else {
-		unsigned long flags;
-		local_irq_save(flags);
-		if (audpp->enabled)
-			audpp_fake_event(audpp, id,
-					 AUDPP_MSG_CFG_MSG, AUDPP_MSG_ENA_ENA);
-		local_irq_restore(flags);
+		if (audpp->enabled) {
+			msg[0] = AUDPP_MSG_ENA_ENA;
+			msg[1] = id;
+			res = msm_adsp_generate_event(audpp, audpp->mod,
+					 AUDPP_MSG_CFG_MSG, sizeof(msg),
+					 sizeof(uint16_t), (void *)msg);
+			if (res < 0)
+				goto out;
+		}
 	}
 
 	res = 0;
@@ -369,7 +421,7 @@ EXPORT_SYMBOL(audpp_enable);
 void audpp_disable(int id, void *private)
 {
 	struct audpp_state *audpp = &the_audpp_state;
-	unsigned long flags;
+	uint16_t msg[8];
 	int rc;
 
 	if (id < -1 || id > 4)
@@ -385,23 +437,29 @@ void audpp_disable(int id, void *private)
 	if (audpp->private[id] != private)
 		goto out;
 
-	local_irq_save(flags);
-	audpp_fake_event(audpp, id, AUDPP_MSG_CFG_MSG, AUDPP_MSG_ENA_DIS);
-	audpp->func[id] = NULL;
-	audpp->private[id] = NULL;
-	local_irq_restore(flags);
+	msg[0] = AUDPP_MSG_ENA_DIS;
+	msg[1] = id;
+	rc = msm_adsp_generate_event(audpp, audpp->mod,
+				 AUDPP_MSG_CFG_MSG, sizeof(msg),
+				 sizeof(uint16_t), (void *)msg);
+	if (rc < 0)
+		goto out;
 
 	if (--audpp->open_count == 0) {
-		MM_AUD_INFO("audpp: disable\n");
+		MM_DBG("disable\n");
 		LOG(EV_DISABLE, 2);
 		audpp_dsp_config(0);
-		rc = wait_event_interruptible(audpp->event_wait,
-				(audpp->enabled == 0));
+		rc = wait_event_timeout(audpp->event_wait,
+					(audpp->enabled == 0),
+					3 * HZ);
 		if (audpp->enabled == 0)
-			MM_AUD_INFO("Received CFG_MSG_DISABLE from ADSP\n");
-		else
-			MM_AUD_ERR("Didn't receive CFG_MSG DISABLE \
+			MM_INFO("Received CFG_MSG_DISABLE from ADSP\n");
+		else {
+			MM_ERR("Didn't receive CFG_MSG DISABLE \
 					message from ADSP\n");
+			if (rc == 0)
+				msm_adsp_dump(audpp->mod);
+		}
 		msm_adsp_disable(audpp->mod);
 		msm_adsp_put(audpp->mod);
 		audpp->mod = NULL;
@@ -421,13 +479,13 @@ void audpp_avsync(int id, unsigned rate)
 	if (BAD_ID(id))
 		return;
 
-	local_irq_save(flags);
+	spin_lock_irqsave(&the_audpp_state.avsync_lock, flags);
 	if (rate)
 		the_audpp_state.avsync_mask |= (1 << id);
 	else
 		the_audpp_state.avsync_mask &= (~(1 << id));
 	the_audpp_state.avsync[0] &= the_audpp_state.avsync_mask;
-	local_irq_restore(flags);
+	spin_unlock_irqrestore(&the_audpp_state.avsync_lock, flags);
 
 	cmd.cmd_id = AUDPP_CMD_AVSYNC;
 	cmd.object_number = id;
@@ -439,7 +497,8 @@ EXPORT_SYMBOL(audpp_avsync);
 
 unsigned audpp_avsync_sample_count(int id)
 {
-	uint16_t *avsync = the_audpp_state.avsync;
+	struct audpp_state *audpp = &the_audpp_state;
+	uint16_t *avsync = audpp->avsync;
 	unsigned val;
 	unsigned long flags;
 	unsigned mask;
@@ -449,12 +508,12 @@ unsigned audpp_avsync_sample_count(int id)
 
 	mask = 1 << id;
 	id = id * AUDPP_AVSYNC_INFO_SIZE + 2;
-	local_irq_save(flags);
+	spin_lock_irqsave(&audpp->avsync_lock, flags);
 	if (avsync[0] & mask)
 		val = (avsync[id] << 16) | avsync[id + 1];
 	else
 		val = 0;
-	local_irq_restore(flags);
+	spin_unlock_irqrestore(&audpp->avsync_lock, flags);
 
 	return val;
 }
@@ -462,7 +521,8 @@ EXPORT_SYMBOL(audpp_avsync_sample_count);
 
 unsigned audpp_avsync_byte_count(int id)
 {
-	uint16_t *avsync = the_audpp_state.avsync;
+	struct audpp_state *audpp = &the_audpp_state;
+	uint16_t *avsync = audpp->avsync;
 	unsigned val;
 	unsigned long flags;
 	unsigned mask;
@@ -472,12 +532,12 @@ unsigned audpp_avsync_byte_count(int id)
 
 	mask = 1 << id;
 	id = id * AUDPP_AVSYNC_INFO_SIZE + 5;
-	local_irq_save(flags);
+	spin_lock_irqsave(&audpp->avsync_lock, flags);
 	if (avsync[0] & mask)
 		val = (avsync[id] << 16) | avsync[id + 1];
 	else
 		val = 0;
-	local_irq_restore(flags);
+	spin_unlock_irqrestore(&audpp->avsync_lock, flags);
 
 	return val;
 }
@@ -575,6 +635,108 @@ int audpp_dsp_set_rx_iir(unsigned id, unsigned enable,
 	return audpp_send_queue3(&cmd, sizeof(cmd));
 }
 EXPORT_SYMBOL(audpp_dsp_set_rx_iir);
+
+int audpp_dsp_set_rx_srs_trumedia_g(
+	struct audpp_cmd_cfg_object_params_srstm_g *srstm)
+{
+	struct audpp_cmd_cfg_object_params_srstm_g cmd;
+
+	MM_DBG("%s\n", __func__);
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.common.cmd_id = AUDPP_SRS_PARAMS;
+	cmd.common.comman_cfg = AUDPP_CMD_CFG_OBJ_UPDATE;
+	cmd.common.command_type = AUDPP_SRS_PARAMS_G;
+
+	memcpy(cmd.v, srstm->v, sizeof(srstm->v));
+
+	return audpp_send_queue3(&cmd, sizeof(cmd));
+}
+EXPORT_SYMBOL(audpp_dsp_set_rx_srs_trumedia_g);
+
+int audpp_dsp_set_rx_srs_trumedia_w(
+	struct audpp_cmd_cfg_object_params_srstm_w *srstm)
+{
+	struct audpp_cmd_cfg_object_params_srstm_w cmd;
+
+	MM_DBG("%s\n", __func__);
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.common.cmd_id = AUDPP_SRS_PARAMS;
+	cmd.common.comman_cfg = AUDPP_CMD_CFG_OBJ_UPDATE;
+	cmd.common.command_type = AUDPP_SRS_PARAMS_W;
+
+	memcpy(cmd.v, srstm->v, sizeof(srstm->v));
+
+	return audpp_send_queue3(&cmd, sizeof(cmd));
+}
+EXPORT_SYMBOL(audpp_dsp_set_rx_srs_trumedia_w);
+
+int audpp_dsp_set_rx_srs_trumedia_c(
+	struct audpp_cmd_cfg_object_params_srstm_c *srstm)
+{
+	struct audpp_cmd_cfg_object_params_srstm_c cmd;
+
+	MM_DBG("%s\n", __func__);
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.common.cmd_id = AUDPP_SRS_PARAMS;
+	cmd.common.comman_cfg = AUDPP_CMD_CFG_OBJ_UPDATE;
+	cmd.common.command_type = AUDPP_SRS_PARAMS_C;
+
+	memcpy(cmd.v, srstm->v, sizeof(srstm->v));
+
+	return audpp_send_queue3(&cmd, sizeof(cmd));
+}
+EXPORT_SYMBOL(audpp_dsp_set_rx_srs_trumedia_c);
+
+int audpp_dsp_set_rx_srs_trumedia_h(
+	struct audpp_cmd_cfg_object_params_srstm_h *srstm)
+{
+	struct audpp_cmd_cfg_object_params_srstm_h cmd;
+
+	MM_DBG("%s\n", __func__);
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.common.cmd_id = AUDPP_SRS_PARAMS;
+	cmd.common.comman_cfg = AUDPP_CMD_CFG_OBJ_UPDATE;
+	cmd.common.command_type = AUDPP_SRS_PARAMS_H;
+
+	memcpy(cmd.v, srstm->v, sizeof(srstm->v));
+
+	return audpp_send_queue3(&cmd, sizeof(cmd));
+}
+EXPORT_SYMBOL(audpp_dsp_set_rx_srs_trumedia_h);
+
+int audpp_dsp_set_rx_srs_trumedia_p(
+	struct audpp_cmd_cfg_object_params_srstm_p *srstm)
+{
+	struct audpp_cmd_cfg_object_params_srstm_p cmd;
+
+	MM_DBG("%s\n", __func__);
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.common.cmd_id = AUDPP_SRS_PARAMS;
+	cmd.common.comman_cfg = AUDPP_CMD_CFG_OBJ_UPDATE;
+	cmd.common.command_type = AUDPP_SRS_PARAMS_P;
+
+	memcpy(cmd.v, srstm->v, sizeof(srstm->v));
+
+	return audpp_send_queue3(&cmd, sizeof(cmd));
+}
+EXPORT_SYMBOL(audpp_dsp_set_rx_srs_trumedia_p);
+
+int audpp_dsp_set_rx_srs_trumedia_l(
+	struct audpp_cmd_cfg_object_params_srstm_l *srstm)
+{
+	struct audpp_cmd_cfg_object_params_srstm_l cmd;
+
+	MM_DBG("%s\n", __func__);
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.common.cmd_id = AUDPP_SRS_PARAMS;
+	cmd.common.comman_cfg = AUDPP_CMD_CFG_OBJ_UPDATE;
+	cmd.common.command_type = AUDPP_SRS_PARAMS_L;
+
+	memcpy(cmd.v, srstm->v, sizeof(srstm->v));
+
+	return audpp_send_queue3(&cmd, sizeof(cmd));
+}
+EXPORT_SYMBOL(audpp_dsp_set_rx_srs_trumedia_l);
 
 /* Implementation Of COPP + POPP */
 int audpp_dsp_set_eq(unsigned id, unsigned enable,
@@ -682,7 +844,7 @@ int audpp_adec_alloc(unsigned dec_attrb, const char **module_name,
 	lidx = audpp->dec_database->num_dec;
 	min_codecs_supported = sizeof(unsigned int) * 8;
 
-	MM_AUD_DBG("mode = 0x%08x codec = 0x%08x\n", mode, codec);
+	MM_DBG("mode = 0x%08x codec = 0x%08x\n", mode, codec);
 
 	for (idx = lidx; idx > 0; idx--, concurrency_entry--) {
 		if (!(audpp->dec_inuse & (1 << (idx - 1)))) {
@@ -717,7 +879,7 @@ int audpp_adec_alloc(unsigned dec_attrb, const char **module_name,
 		      ((audpp->concurrency) * (audpp->dec_database->num_dec))) +
 		     lidx);
 		decid |= ((*concurrency_entry & AUDPP_OP_MASK) >> 12);
-		MM_AUD_INFO("decid =0x%08x module_name=%s, queueid=%d \n",
+		MM_INFO("decid =0x%08x module_name=%s, queueid=%d \n",
 			decid, *module_name, *queueid);
 	}
 	mutex_unlock(audpp->lock_dec);
@@ -737,7 +899,7 @@ void audpp_adec_free(int decid)
 			audpp->dec_inuse &= ~(1 << (idx - 1));
 			audpp->dec_info_table[idx - 1].codec = -1;
 			audpp->dec_info_table[idx - 1].pid = 0;
-			MM_AUD_INFO("free decid =%d \n", decid);
+			MM_INFO("free decid =%d \n", decid);
 			break;
 		}
 	}
@@ -767,17 +929,17 @@ static ssize_t concurrency_store(struct device *dev,
 	int rc = -1;
 	mutex_lock(audpp->lock_dec);
 	if (audpp->dec_inuse) {
-		MM_AUD_ERR("Can not change profile, while playback in progress\n");
+		MM_ERR("Can not change profile, while playback in progress\n");
 		goto done;
 	}
 	rc = strict_strtoul(buf, 10, &concurrency);
 	if (!rc &&
 		(concurrency < audpp->dec_database->num_concurrency_support)) {
 		audpp->concurrency = concurrency;
-		MM_AUD_DBG("Concurrency case %ld\n", audpp->concurrency);
+		MM_DBG("Concurrency case %ld\n", audpp->concurrency);
 		rc = count;
 	} else {
-		MM_AUD_ERR("Not a valid Concurrency case\n");
+		MM_ERR("Not a valid Concurrency case\n");
 		rc = -EINVAL;
 	}
 done:
@@ -820,23 +982,25 @@ static int audpp_probe(struct platform_device *pdev)
 	audpp->dec_database =
 	    (struct msm_adspdec_database *)pdev->dev.platform_data;
 
-	MM_AUD_INFO("Number of decoder supported %d\n",
+	MM_INFO("Number of decoder supported %d\n",
 			audpp->dec_database->num_dec);
-	MM_AUD_INFO("Number of concurrency supported %d\n",
+	MM_INFO("Number of concurrency supported %d\n",
 			audpp->dec_database->num_concurrency_support);
 
 	init_waitqueue_head(&audpp->event_wait);
 
+	spin_lock_init(&audpp->avsync_lock);
+
 	for (idx = 0; idx < audpp->dec_database->num_dec; idx++) {
 		audpp->dec_info_table[idx].codec = -1;
 		audpp->dec_info_table[idx].pid = 0;
-		MM_AUD_INFO("module_name:%s\n",
+		MM_INFO("module_name:%s\n",
 			audpp->dec_database->dec_info_list[idx].module_name);
-		MM_AUD_INFO("queueid:%d\n",
+		MM_INFO("queueid:%d\n",
 			audpp->dec_database->dec_info_list[idx].module_queueid);
-		MM_AUD_INFO("decid:%d\n",
+		MM_INFO("decid:%d\n",
 			audpp->dec_database->dec_info_list[idx].module_decid);
-		MM_AUD_INFO("nr_codec_support:%d\n",
+		MM_INFO("nr_codec_support:%d\n",
 			audpp->dec_database->dec_info_list[idx].
 			nr_codec_support);
 	}

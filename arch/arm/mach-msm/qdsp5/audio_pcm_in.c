@@ -2,7 +2,7 @@
  *
  * pcm audio input device
  *
- * Copyright (c) 2011, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2011-2013, The Linux Foundation. All rights reserved.
  *
  * This code is based in part on arch/arm/mach-msm/qdsp5v2/audio_pcm_in.c,
  * Copyright (C) 2008 Google, Inc.
@@ -26,6 +26,7 @@
 #include <linux/kthread.h>
 #include <linux/wait.h>
 #include <linux/dma-mapping.h>
+#include <linux/msm_ion.h>
 
 #include <linux/delay.h>
 
@@ -41,50 +42,21 @@
 
 #include "audmgr.h"
 
+#include <mach/qdsp5/audio_acdb_def.h>
 #include <mach/qdsp5/qdsp5audpreproc.h>
 #include <mach/qdsp5/qdsp5audpreproccmdi.h>
 #include <mach/qdsp5/qdsp5audpreprocmsg.h>
 #include <mach/qdsp5/qdsp5audreccmdi.h>
 #include <mach/qdsp5/qdsp5audrecmsg.h>
 #include <mach/debug_mm.h>
-#include <linux/rtc.h>
 
 /* FRAME_NUM must be a power of two */
-#define FRAME_NUM        (8)
-#define FRAME_SIZE       (2052 * 2)
-#define MONO_DATA_SIZE   (2048)
-#define STEREO_DATA_SIZE (MONO_DATA_SIZE * 2)
-#define DMASZ            (FRAME_SIZE * FRAME_NUM)
-
+#define FRAME_NUM		(8)
+#define FRAME_SIZE		(2052 * 2)
+#define MONO_DATA_SIZE		(2048)
+#define STEREO_DATA_SIZE	(MONO_DATA_SIZE * 2)
+#define DMASZ			(FRAME_SIZE * FRAME_NUM)
 #define MSM_AUD_BUFFER_UPDATE_WAIT_MS 2000
-
-#define AGC_PARAM_SIZE   (20)
-#define NS_PARAM_SIZE    (6)
-#define IIR_PARAM_SIZE   (48)
-#define DEBUG            (0)
-
-#undef   pr_aud_info1
-#define  pr_aud_info1(fmt,args...) do { } while(0)
-
-struct tx_agc_config {
-	uint16_t agc_params[AGC_PARAM_SIZE];
-};
-
-struct ns_config {
-	uint16_t ns_params[NS_PARAM_SIZE];
-};
-
-struct tx_iir_filter {
-	uint16_t num_bands;
-	uint16_t iir_params[IIR_PARAM_SIZE];
-};
-
-struct audpre_cmd_iir_config_type {
-	uint16_t cmd_id;
-	uint16_t active_flag;
-	uint16_t num_bands;
-	uint16_t iir_params[IIR_PARAM_SIZE];
-};
 
 struct buffer {
 	void *data;
@@ -104,7 +76,6 @@ struct audio_in {
 	struct mutex read_lock;
 	wait_queue_head_t wait;
 
-	struct msm_adsp_module *audpre;
 	struct msm_adsp_module *audrec;
 	const char *module_name;
 	unsigned queue_ids;
@@ -134,16 +105,19 @@ struct audio_in {
 	int enabled;
 	int running;
 	int stopped; /* set when stopped, cleared on flush */
+	struct audrec_session_info session_info; /*audrec session info*/
 
 	/* audpre settings */
 	int tx_agc_enable;
-	struct tx_agc_config agc;
-
+	audpreproc_cmd_cfg_agc_params tx_agc_cfg;
 	int ns_enable;
-	struct ns_config ns;
-
+	audpreproc_cmd_cfg_ns_params ns_cfg;
+	/* For different sample rate, the coeff might be different. *
+	 * All the coeff should be passed from user space	    */
 	int iir_enable;
-	struct tx_iir_filter iir;
+	audpreproc_cmd_cfg_iir_tuning_filter_params iir_cfg;
+	struct ion_client *client;
+	struct ion_handle *output_buff_handle;
 };
 
 static int audpcm_in_dsp_enable(struct audio_in *audio, int enable);
@@ -203,6 +177,32 @@ static unsigned convert_samp_index(unsigned index)
 	}
 }
 
+/* ------------------- dsp --------------------- */
+static void audpre_dsp_event(void *data, unsigned id,  void *event_data)
+{
+
+	uint16_t *msg = event_data;
+
+	if (!msg)
+		return;
+
+	switch (id) {
+	case AUDPREPROC_MSG_CMD_CFG_DONE_MSG:
+		MM_DBG("type %d, status_flag %d\n",\
+			msg[0], msg[1]);
+		break;
+	case AUDPREPROC_MSG_ERROR_MSG_ID:
+		MM_INFO("err_index %d\n", msg[0]);
+		break;
+	case ADSP_MESSAGE_ID:
+		MM_DBG("Received ADSP event: module enable(audpreproctask)\n");
+		break;
+	default:
+		MM_ERR("unknown event %d\n", id);
+	}
+}
+
+
 /* must be called with audio->lock held */
 static int audpcm_in_enable(struct audio_in *audio)
 {
@@ -219,23 +219,31 @@ static int audpcm_in_enable(struct audio_in *audio)
 	cfg.snd_method = RPC_SND_METHOD_MIDI;
 
 	rc = audmgr_enable(&audio->audmgr, &cfg);
-	if (rc < 0)
+	if (rc < 0) {
+		msm_adsp_dump(audio->audrec);
 		return rc;
-
-	if (msm_adsp_enable(audio->audpre)) {
-		MM_AUD_ERR("audrec: msm_adsp_enable(audpre) failed\n");
+	}
+	if (audpreproc_enable(audio->enc_id, &audpre_dsp_event, audio)) {
+		MM_ERR("msm_adsp_enable(audpreproc) failed\n");
 		audmgr_disable(&audio->audmgr);
 		return -ENODEV;
 	}
+
 	if (msm_adsp_enable(audio->audrec)) {
+		audpreproc_disable(audio->enc_id, audio);
 		audmgr_disable(&audio->audmgr);
-		msm_adsp_disable(audio->audpre);
-		MM_AUD_ERR("audrec: msm_adsp_enable(audrec) failed\n");
+		MM_ERR("msm_adsp_enable(audrec) failed\n");
 		return -ENODEV;
 	}
 
 	audio->enabled = 1;
 	audpcm_in_dsp_enable(audio, 1);
+
+	/*update aurec session info in audpreproc layer*/
+	audio->session_info.session_id = audio->enc_id;
+	audio->session_info.sampling_freq =
+			convert_samp_index(audio->samp_rate);
+	audpreproc_update_audrec_info(&audio->session_info);
 
 	return 0;
 }
@@ -243,40 +251,26 @@ static int audpcm_in_enable(struct audio_in *audio)
 /* must be called with audio->lock held */
 static int audpcm_in_disable(struct audio_in *audio)
 {
+	int rc;
+
 	if (audio->enabled) {
 		audio->enabled = 0;
 
 		audpcm_in_dsp_enable(audio, 0);
 
+		audio->stopped = 1;
 		wake_up(&audio->wait);
 
 		msm_adsp_disable(audio->audrec);
-		msm_adsp_disable(audio->audpre);
-		audmgr_disable(&audio->audmgr);
+		audpreproc_disable(audio->enc_id, audio);
+		/*reset the sampling frequency information at audpreproc layer*/
+		audio->session_info.sampling_freq = 0;
+		audpreproc_update_audrec_info(&audio->session_info);
+		rc = audmgr_disable(&audio->audmgr);
+		if (rc < 0)
+			msm_adsp_dump(audio->audrec);
 	}
 	return 0;
-}
-
-/* ------------------- dsp --------------------- */
-static void audpre_dsp_event(void *data, unsigned id, size_t len,
-			    void (*getevent)(void *ptr, size_t len))
-{
-	uint16_t msg[2];
-	getevent(msg, sizeof(msg));
-
-	switch (id) {
-	case AUDPREPROC_MSG_CMD_CFG_DONE_MSG:
-		MM_AUD_INFO("audpre: type %d, status_flag %d\n", msg[0], msg[1]);
-		break;
-	case AUDPREPROC_MSG_ERROR_MSG_ID:
-		MM_AUD_INFO("audpre: err_index %d\n", msg[0]);
-		break;
-	case ADSP_MESSAGE_ID:
-		MM_AUD_INFO("audpre: module enabled\n");
-		break;
-	default:
-		MM_AUD_ERR("audpre: unknown event %d\n", id);
-	}
 }
 
 struct audio_frame {
@@ -305,7 +299,7 @@ static void audpcm_in_get_dsp_frames(struct audio_in *audio)
 	/* If overflow, move the tail index foward. */
 	if (audio->in_head == audio->in_tail) {
 		audio->in_tail = (audio->in_tail + 1) & (FRAME_NUM - 1);
-		MM_AUD_ERR("Error! not able to keep up the read\n");
+		MM_ERR("Error! not able to keep up the read\n");
 	} else
 		audio->in_count++;
 
@@ -324,7 +318,7 @@ static void audrec_dsp_event(void *data, unsigned id, size_t len,
 	if (data)
 		audio = data;
 	else {
-		MM_AUD_ERR("invalid data for event %x\n", id);
+		MM_ERR("invalid data for event %x\n", id);
 		return;
 	}
 
@@ -334,10 +328,10 @@ static void audrec_dsp_event(void *data, unsigned id, size_t len,
 	case AUDREC_MSG_CMD_CFG_DONE_MSG: {
 		if (msg[0] & AUDREC_MSG_CFG_DONE_ENC_ENA) {
 			audio->audrec_obj_idx = msg[1];
-			MM_AUD_INFO("audpre: CFG ENABLED\n");
+			MM_INFO("CFG ENABLED\n");
 			audpcm_in_encmem_config(audio);
 		} else {
-			MM_AUD_INFO("audrec: CFG SLEEP\n");
+			MM_INFO("CFG SLEEP\n");
 			audio->running = 0;
 			audio->tx_agc_enable = 0;
 			audio->ns_enable = 0;
@@ -346,27 +340,29 @@ static void audrec_dsp_event(void *data, unsigned id, size_t len,
 		break;
 	}
 	case AUDREC_MSG_CMD_AREC_MEM_CFG_DONE_MSG: {
-		MM_AUD_DBG("audrec: AREC_MEM_CFG_DONE_MSG\n");
+		MM_DBG("AREC_MEM_CFG_DONE_MSG\n");
 		audpcm_in_encparam_config(audio);
 		break;
 	}
 	case AUDREC_MSG_CMD_AREC_PARAM_CFG_DONE_MSG: {
-		MM_AUD_INFO("audrec: PARAM CFG DONE\n");
+		MM_INFO("PARAM CFG DONE\n");
 		audio->running = 1;
+		if (is_acdb_enabled())
+			break;
 		audio_dsp_set_tx_agc(audio);
 		audio_dsp_set_ns(audio);
 		audio_dsp_set_iir(audio);
 		break;
 	}
 	case AUDREC_MSG_NO_EXT_PKT_AVAILABLE_MSG: {
-		MM_AUD_ERR("audrec: ERROR %x\n", msg[0]);
+		MM_DBG("ERROR %x\n", msg[0]);
 		break;
 	}
 	case AUDREC_MSG_PACKET_READY_MSG: {
 		struct audrec_msg_packet_ready_msg pkt_ready_msg;
 
 		getevent(&pkt_ready_msg, AUDREC_MSG_PACKET_READY_MSG_LEN);
-		MM_AUD_DBG("UP_PACKET_READY_MSG: write cnt msw  %d \
+		MM_DBG("UP_PACKET_READY_MSG: write cnt msw  %d \
 		write cnt lsw %d read cnt msw %d  read cnt lsw %d \n",\
 		pkt_ready_msg.pkt_counter_msw, \
 		pkt_ready_msg.pkt_counter_lsw, \
@@ -377,25 +373,18 @@ static void audrec_dsp_event(void *data, unsigned id, size_t len,
 		break;
 	}
 	case ADSP_MESSAGE_ID: {
-		MM_AUD_INFO("audrec: module enabled\n");
+		MM_DBG("Received ADSP event: module \
+				enable/disable(audrectask)\n");
 		break;
 	}
 	default:
-		MM_AUD_ERR("audrec: unknown event %d\n", id);
+		MM_ERR("unknown event %d\n", id);
 	}
 }
-
-static struct msm_adsp_ops audpre_adsp_ops = {
-	.event = audpre_dsp_event,
-};
 
 static struct msm_adsp_ops audrec_adsp_ops = {
 	.event = audrec_dsp_event,
 };
-
-
-#define audio_send_queue_pre(audio, cmd, len) \
-	msm_adsp_write(audio->audpre, QDSP_uPAudPreProcCmdQueue, cmd, len)
 
 #define audio_send_queue_recbs(audio, cmd, len) \
 	msm_adsp_write(audio->audrec, ((audio->queue_ids & 0xFFFF0000) >> 16),\
@@ -409,11 +398,11 @@ static int audio_dsp_set_tx_agc(struct audio_in *audio)
 	audpreproc_cmd_cfg_agc_params cmd;
 
 	memset(&cmd, 0, sizeof(cmd));
-	cmd.cmd_id = AUDPREPROC_CMD_CFG_AGC_PARAMS;
 
+	audio->tx_agc_cfg.cmd_id = AUDPREPROC_CMD_CFG_AGC_PARAMS;
 	if (audio->tx_agc_enable) {
 		/* cmd.tx_agc_param_mask = 0xFE00 from sample code */
-		cmd.tx_agc_param_mask =
+		audio->tx_agc_cfg.tx_agc_param_mask =
 		(1 << AUDPREPROC_CMD_TX_AGC_PARAM_MASK_COMP_SLOPE) |
 		(1 << AUDPREPROC_CMD_TX_AGC_PARAM_MASK_COMP_TH) |
 		(1 << AUDPREPROC_CMD_TX_AGC_PARAM_MASK_EXP_SLOPE) |
@@ -421,12 +410,10 @@ static int audio_dsp_set_tx_agc(struct audio_in *audio)
 		(1 << AUDPREPROC_CMD_TX_AGC_PARAM_MASK_COMP_AIG_FLAG) |
 		(1 << AUDPREPROC_CMD_TX_AGC_PARAM_MASK_COMP_STATIC_GAIN) |
 		(1 << AUDPREPROC_CMD_TX_AGC_PARAM_MASK_TX_AGC_ENA_FLAG);
-		cmd.tx_agc_enable_flag =
+		audio->tx_agc_cfg.tx_agc_enable_flag =
 			AUDPREPROC_CMD_TX_AGC_ENA_FLAG_ENA;
-		memcpy(&cmd.static_gain, &audio->agc.agc_params[0],
-			sizeof(uint16_t) * 6);
 		/* cmd.param_mask = 0xFFF0 from sample code */
-		cmd.param_mask =
+		audio->tx_agc_cfg.tx_agc_param_mask =
 			(1 << AUDPREPROC_CMD_PARAM_MASK_RMS_TAY) |
 			(1 << AUDPREPROC_CMD_PARAM_MASK_RELEASEK) |
 			(1 << AUDPREPROC_CMD_PARAM_MASK_DELAY) |
@@ -439,42 +426,15 @@ static int audio_dsp_set_tx_agc(struct audio_in *audio)
 			(1 << AUDPREPROC_CMD_PARAM_MASK_LEAK_UP) |
 			(1 << AUDPREPROC_CMD_PARAM_MASK_LEAK_DOWN) |
 			(1 << AUDPREPROC_CMD_PARAM_MASK_AIG_ATTACKK);
-		memcpy(&cmd.aig_attackk, &audio->agc.agc_params[6],
-			sizeof(uint16_t) * 14);
-
 	} else {
-		cmd.tx_agc_param_mask =
+		audio->tx_agc_cfg.tx_agc_param_mask =
 			(1 << AUDPREPROC_CMD_TX_AGC_PARAM_MASK_TX_AGC_ENA_FLAG);
-		cmd.tx_agc_enable_flag =
+		audio->tx_agc_cfg.tx_agc_enable_flag =
 			AUDPREPROC_CMD_TX_AGC_ENA_FLAG_DIS;
 	}
-#if DEBUG
-	MM_AUD_INFO("cmd_id = 0x%04x\n", cmd.cmd_id);
-	MM_AUD_INFO("tx_agc_param_mask = 0x%04x\n", cmd.tx_agc_param_mask);
-	MM_AUD_INFO("tx_agc_enable_flag = 0x%04x\n", cmd.tx_agc_enable_flag);
-	MM_AUD_INFO("static_gain = 0x%04x\n", cmd.static_gain);
-	MM_AUD_INFO("adaptive_gain_flag = 0x%04x\n", cmd.adaptive_gain_flag);
-	MM_AUD_INFO("expander_th = 0x%04x\n", cmd.expander_th);
-	MM_AUD_INFO("expander_slope = 0x%04x\n", cmd.expander_slope);
-	MM_AUD_INFO("compressor_th = 0x%04x\n", cmd.compressor_th);
-	MM_AUD_INFO("compressor_slope = 0x%04x\n", cmd.compressor_slope);
-	MM_AUD_INFO("param_mask = 0x%04x\n", cmd.param_mask);
-	MM_AUD_INFO("aig_attackk = 0x%04x\n", cmd.aig_attackk);
-	MM_AUD_INFO("aig_leak_down = 0x%04x\n", cmd.aig_leak_down);
-	MM_AUD_INFO("aig_leak_up = 0x%04x\n", cmd.aig_leak_up);
-	MM_AUD_INFO("aig_max = 0x%04x\n", cmd.aig_max);
-	MM_AUD_INFO("aig_min = 0x%04x\n", cmd.aig_min);
-	MM_AUD_INFO("aig_releasek = 0x%04x\n", cmd.aig_releasek);
-	MM_AUD_INFO("aig_leakrate_fast = 0x%04x\n", cmd.aig_leakrate_fast);
-	MM_AUD_INFO("aig_leakrate_slow = 0x%04x\n", cmd.aig_leakrate_slow);
-	MM_AUD_INFO("attackk_msw = 0x%04x\n", cmd.attackk_msw);
-	MM_AUD_INFO("attackk_lsw = 0x%04x\n", cmd.attackk_lsw);
-	MM_AUD_INFO("delay = 0x%04x\n", cmd.delay);
-	MM_AUD_INFO("releasek_msw = 0x%04x\n", cmd.releasek_msw);
-	MM_AUD_INFO("releasek_lsw = 0x%04x\n", cmd.releasek_lsw);
-	MM_AUD_INFO("rms_tav = 0x%04x\n", cmd.rms_tav);
-#endif
-	return audio_send_queue_pre(audio, &cmd, sizeof(cmd));
+	cmd = audio->tx_agc_cfg;
+
+	return audpreproc_dsp_set_agc(&cmd, sizeof(cmd));
 }
 
 static int audio_enable_tx_agc(struct audio_in *audio, int enable)
@@ -492,19 +452,18 @@ static int audio_dsp_set_ns(struct audio_in *audio)
 	audpreproc_cmd_cfg_ns_params cmd;
 
 	memset(&cmd, 0, sizeof(cmd));
-	cmd.cmd_id = AUDPREPROC_CMD_CFG_NS_PARAMS;
+
+	audio->ns_cfg.cmd_id = AUDPREPROC_CMD_CFG_NS_PARAMS;
 
 	if (audio->ns_enable) {
 		/* cmd.ec_mode_new is fixed as 0x0064 when enable
 		 * from sample code */
-		cmd.ec_mode_new =
+		audio->ns_cfg.ec_mode_new =
 			AUDPREPROC_CMD_EC_MODE_NEW_NS_ENA |
 			AUDPREPROC_CMD_EC_MODE_NEW_HB_ENA |
 			AUDPREPROC_CMD_EC_MODE_NEW_VA_ENA;
-		memcpy(&cmd.dens_gamma_n, &audio->ns.ns_params,
-			sizeof(audio->ns.ns_params));
 	} else {
-		cmd.ec_mode_new =
+		audio->ns_cfg.ec_mode_new =
 			AUDPREPROC_CMD_EC_MODE_NEW_NLMS_DIS |
 			AUDPREPROC_CMD_EC_MODE_NEW_DES_DIS |
 			AUDPREPROC_CMD_EC_MODE_NEW_NS_DIS |
@@ -519,17 +478,9 @@ static int audio_dsp_set_ns(struct audio_in *audio)
 			AUDPREPROC_CMD_EC_MODE_NEW_FNE_DIS |
 			AUDPREPROC_CMD_EC_MODE_NEW_PRENLMS_DIS;
 	}
-#if DEBUG
-	MM_AUD_INFO("cmd_id = 0x%04x\n", cmd.cmd_id);
-	MM_AUD_INFO("ec_mode_new = 0x%04x\n", cmd.ec_mode_new);
-	MM_AUD_INFO("dens_gamma_n = 0x%04x\n", cmd.dens_gamma_n);
-	MM_AUD_INFO("dens_nfe_block_size = 0x%04x\n", cmd.dens_nfe_block_size);
-	MM_AUD_INFO("dens_limit_ns = 0x%04x\n", cmd.dens_limit_ns);
-	MM_AUD_INFO("dens_limit_ns_d = 0x%04x\n", cmd.dens_limit_ns_d);
-	MM_AUD_INFO("wb_gamma_e = 0x%04x\n", cmd.wb_gamma_e);
-	MM_AUD_INFO("wb_gamma_n = 0x%04x\n", cmd.wb_gamma_n);
-#endif
-	return audio_send_queue_pre(audio, &cmd, sizeof(cmd));
+	cmd = audio->ns_cfg;
+
+	return audpreproc_dsp_set_ns(&cmd, sizeof(cmd));
 }
 
 static int audio_enable_ns(struct audio_in *audio, int enable)
@@ -544,25 +495,21 @@ static int audio_enable_ns(struct audio_in *audio, int enable)
 
 static int audio_dsp_set_iir(struct audio_in *audio)
 {
-	struct audpre_cmd_iir_config_type cmd;
+	audpreproc_cmd_cfg_iir_tuning_filter_params cmd;
 
 	memset(&cmd, 0, sizeof(cmd));
-	cmd.cmd_id = AUDPREPROC_CMD_CFG_IIR_TUNING_FILTER_PARAMS;
 
-	if (audio->iir_enable) {
-		cmd.active_flag = AUDPREPROC_CMD_IIR_ACTIVE_FLAG_ENA;
-		cmd.num_bands = audio->iir.num_bands;
-		memcpy(&cmd.iir_params, &audio->iir.iir_params,
-				sizeof(audio->iir.iir_params));
-	} else {
-		cmd.active_flag = AUDPREPROC_CMD_IIR_ACTIVE_FLAG_DIS;
-	}
-#if DEBUG
-	MM_AUD_INFO("cmd_id = 0x%04x\n", cmd.cmd_id);
-	MM_AUD_INFO("active_flag = 0x%04x\n", cmd.active_flag);
-#endif
+	audio->iir_cfg.cmd_id = AUDPREPROC_CMD_CFG_IIR_TUNING_FILTER_PARAMS;
 
-	return audio_send_queue_pre(audio, &cmd, sizeof(cmd));
+	if (audio->iir_enable)
+		/* cmd.active_flag is 0xFFFF from sample code but 0x0001 here */
+		audio->iir_cfg.active_flag = AUDPREPROC_CMD_IIR_ACTIVE_FLAG_ENA;
+	else
+		audio->iir_cfg.active_flag = AUDPREPROC_CMD_IIR_ACTIVE_FLAG_DIS;
+
+	cmd = audio->iir_cfg;
+
+	return audpreproc_dsp_set_iir(&cmd, sizeof(cmd));
 }
 
 static int audio_enable_iir(struct audio_in *audio, int enable)
@@ -655,7 +602,7 @@ static void audpcm_in_flush(struct audio_in *audio)
 	audio->in_head = 0;
 	audio->in_tail = 0;
 	audio->in_count = 0;
-	for (i = FRAME_NUM-1; i <= 0; i--) {
+	for (i = FRAME_NUM-1; i >= 0; i--) {
 		audio->in[i].size = 0;
 		audio->in[i].read = 0;
 	}
@@ -684,7 +631,6 @@ static long audpcm_in_ioctl(struct file *file,
 	}
 	case AUDIO_STOP:
 		rc = audpcm_in_disable(audio);
-		audio->stopped = 1;
 		break;
 	case AUDIO_FLUSH:
 		if (audio->stopped) {
@@ -803,7 +749,7 @@ static ssize_t audpcm_in_read(struct file *file,
 			count -= size;
 			buf += size;
 		} else {
-			MM_AUD_ERR("audio_in: short read... count %d, size %d\n", count, size);
+			MM_ERR("short read\n");
 			break;
 		}
 	}
@@ -825,31 +771,21 @@ static ssize_t audpcm_in_write(struct file *file,
 static int audpcm_in_release(struct inode *inode, struct file *file)
 {
 	struct audio_in *audio = file->private_data;
-	struct timespec ts;
-	struct rtc_time tm;
 
 	mutex_lock(&audio->lock);
 	audpcm_in_disable(audio);
 	audpcm_in_flush(audio);
 	audpreproc_aenc_free(audio->enc_id);
 	msm_adsp_put(audio->audrec);
-	msm_adsp_put(audio->audpre);
 	audio->audrec = NULL;
-	audio->audpre = NULL;
 	audio->opened = 0;
 	if (audio->data) {
-		free_contiguous_memory((void *)audio->data);
+		ion_unmap_kernel(audio->client, audio->output_buff_handle);
+		ion_free(audio->client, audio->output_buff_handle);
 		audio->data = NULL;
 	}
+	ion_client_destroy(audio->client);
 	mutex_unlock(&audio->lock);
-
-	getnstimeofday(&ts);
-	rtc_time_to_tm(ts.tv_sec, &tm);
-	pr_aud_info1("[ATS][stop_recording][successful] at %lld \
-		(%d-%02d-%02d %02d:%02d:%02d.%09lu UTC)\n",
-		ktime_to_ns(ktime_get()),
-		tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-		tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec);
 	return 0;
 }
 
@@ -859,11 +795,13 @@ static int audpcm_in_open(struct inode *inode, struct file *file)
 {
 	struct audio_in *audio = &the_audio_in;
 	int rc;
+	int len = 0;
+	unsigned long ionflag = 0;
+	ion_phys_addr_t addr = 0;
+	struct ion_handle *handle = NULL;
+	struct ion_client *client = NULL;
 
 	int encid;
-	struct timespec ts;
-	struct rtc_time tm;
-
 	mutex_lock(&audio->lock);
 	if (audio->opened) {
 		rc = -EBUSY;
@@ -886,7 +824,7 @@ static int audpcm_in_open(struct inode *inode, struct file *file)
 	encid = audpreproc_aenc_alloc(audio->enc_type, &audio->module_name,
 			&audio->queue_ids);
 	if (encid < 0) {
-		MM_AUD_ERR("No free encoder available\n");
+		MM_ERR("No free encoder available\n");
 		rc = -ENODEV;
 		goto done;
 	}
@@ -899,53 +837,73 @@ static int audpcm_in_open(struct inode *inode, struct file *file)
 		goto done;
 	}
 
-	rc = msm_adsp_get("AUDPREPROCTASK", &audio->audpre,
-				&audpre_adsp_ops, audio);
-	if (rc) {
-		msm_adsp_put(audio->audrec);
-		audpreproc_aenc_free(audio->enc_id);
-		goto done;
-	}
-
 	audio->dsp_cnt = 0;
 	audio->stopped = 0;
 
 	audpcm_in_flush(audio);
 
-	audio->data = allocate_contiguous_memory(DMASZ, MEMTYPE_EBI1,
-				SZ_4K, 0);
-	if (!audio->data) {
-		MM_ERR("could not allocate read buffers\n");
+	client = msm_ion_client_create(UINT_MAX, "Audio_PCM_in_client");
+	if (IS_ERR_OR_NULL(client)) {
+		MM_ERR("Unable to create ION client\n");
 		rc = -ENOMEM;
-		goto evt_error;
-	} else {
-		audio->phys = memory_pool_node_paddr(audio->data);
-		if (!audio->phys) {
-			MM_ERR("could not get physical address\n");
-			rc = -ENOMEM;
-			free_contiguous_memory(audio->data);
-			goto evt_error;
-		}
-		MM_DBG("read buf: phy addr 0x%08x kernel addr 0x%08x\n",
-				audio->phys, (int)audio->data);
+		goto client_create_error;
 	}
+	audio->client = client;
+
+	MM_DBG("allocating mem sz = %d\n", DMASZ);
+	handle = ion_alloc(client, DMASZ, SZ_4K,
+		ION_HEAP(ION_AUDIO_HEAP_ID), 0);
+	if (IS_ERR_OR_NULL(handle)) {
+		MM_ERR("Unable to create allocate O/P buffers\n");
+		rc = -ENOMEM;
+		goto output_buff_alloc_error;
+	}
+
+	audio->output_buff_handle = handle;
+
+	rc = ion_phys(client , handle, &addr, &len);
+	if (rc) {
+		MM_ERR("O/P buffers:Invalid phy: %x sz: %x\n",
+			(unsigned int) addr, (unsigned int) len);
+		rc = -ENOMEM;
+		goto output_buff_get_phys_error;
+	} else {
+		MM_INFO("O/P buffers:valid phy: %x sz: %x\n",
+			(unsigned int) addr, (unsigned int) len);
+	}
+	audio->phys = (int32_t)addr;
+
+	rc = ion_handle_get_flags(client, handle, &ionflag);
+	if (rc) {
+		MM_ERR("could not get flags for the handle\n");
+		rc = -ENOMEM;
+		goto output_buff_get_flags_error;
+	}
+
+	audio->data = ion_map_kernel(client, handle);
+	if (IS_ERR(audio->data)) {
+		MM_ERR("could not map read buffers,freeing instance 0x%08x\n",
+				(int)audio);
+		rc = -ENOMEM;
+		goto output_buff_map_error;
+	}
+	MM_DBG("read buf: phy addr 0x%08x kernel addr 0x%08x\n",
+		audio->phys, (int)audio->data);
 
 	file->private_data = audio;
 	audio->opened = 1;
 	rc = 0;
 done:
 	mutex_unlock(&audio->lock);
-	getnstimeofday(&ts);
-	rtc_time_to_tm(ts.tv_sec, &tm);
-	pr_aud_info1("[ATS][start_recording][successful] at %lld \
-		(%d-%02d-%02d %02d:%02d:%02d.%09lu UTC)\n",
-		ktime_to_ns(ktime_get()),
-		tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-		tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec);
 	return rc;
-evt_error:
+output_buff_map_error:
+output_buff_get_phys_error:
+output_buff_get_flags_error:
+	ion_free(client, audio->output_buff_handle);
+output_buff_alloc_error:
+	ion_client_destroy(client);
+client_create_error:
 	msm_adsp_put(audio->audrec);
-	msm_adsp_put(audio->audpre);
 	audpreproc_aenc_free(audio->enc_id);
 	mutex_unlock(&audio->lock);
 	return rc;
@@ -956,16 +914,21 @@ static long audpre_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	struct audio_in *audio = file->private_data;
 	int rc = 0, enable;
 	uint16_t enable_mask;
-#if DEBUG
-	int i;
-#endif
 
 	mutex_lock(&audio->lock);
 	switch (cmd) {
-	case AUDIO_ENABLE_AUDPRE: {
+	case AUDIO_ENABLE_AUDPRE:
+
+		if (is_acdb_enabled()) {
+			MM_INFO("Audpp is supported via acdb\n");
+			rc = -EFAULT;
+			break;
+		}
 		if (copy_from_user(&enable_mask, (void *) arg,
-				sizeof(enable_mask)))
-			goto out_fault;
+						sizeof(enable_mask))) {
+			rc = -EFAULT;
+			break;
+		}
 
 		enable = (enable_mask & AGC_ENABLE) ? 1 : 0;
 		audio_enable_tx_agc(audio, enable);
@@ -974,52 +937,29 @@ static long audpre_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		enable = (enable_mask & TX_IIR_ENABLE) ? 1 : 0;
 		audio_enable_iir(audio, enable);
 		break;
-	}
-	case AUDIO_SET_AGC: {
-		if (copy_from_user(&audio->agc, (void *) arg,
-				sizeof(audio->agc)))
-			goto out_fault;
-#if DEBUG
-		MM_AUD_INFO("set agc\n");
-		for (i = 0; i < AGC_PARAM_SIZE; i++) \
-			MM_AUD_INFO("agc_params[%d] = 0x%04x\n", i,
-				audio->agc.agc_params[i]);
-#endif
+
+	case AUDIO_SET_AGC:
+		if (copy_from_user(&audio->tx_agc_cfg, (void *) arg,
+						sizeof(audio->tx_agc_cfg)))
+			rc = -EFAULT;
 		break;
-	}
-	case AUDIO_SET_NS: {
-		if (copy_from_user(&audio->ns, (void *) arg, sizeof(audio->ns)))
-			goto out_fault;
-#if DEBUG
-		MM_AUD_INFO("set ns\n");
-		for (i = 0; i < NS_PARAM_SIZE; i++) \
-			MM_AUD_INFO("ns_params[%d] = 0x%04x\n",
-				i, audio->ns.ns_params[i]);
-#endif
+
+	case AUDIO_SET_NS:
+		if (copy_from_user(&audio->ns_cfg, (void *) arg,
+						sizeof(audio->ns_cfg)))
+			rc = -EFAULT;
 		break;
-	}
-	case AUDIO_SET_TX_IIR: {
-		if (copy_from_user(&audio->iir, (void *) arg,
-					sizeof(audio->iir)))
-			goto out_fault;
-#if DEBUG
-		MM_AUD_INFO("set iir\n");
-		MM_AUD_INFO("iir.num_bands = 0x%04x\n", audio->iir.num_bands);
-		for (i = 0; i < IIR_PARAM_SIZE; i++) \
-			MM_AUD_INFO("iir_params[%d] = 0x%04x\n",
-				i, audio->iir.iir_params[i]);
-#endif
+
+	case AUDIO_SET_TX_IIR:
+		if (copy_from_user(&audio->iir_cfg, (void *) arg,
+						sizeof(audio->iir_cfg)))
+			rc = -EFAULT;
 		break;
-	}
+
 	default:
 		rc = -EINVAL;
 	}
 
-	goto out;
-
-out_fault:
-	rc = -EFAULT;
-out:
 	mutex_unlock(&audio->lock);
 	return rc;
 }
@@ -1056,21 +996,12 @@ static const struct file_operations audpre_fops = {
 
 static struct miscdevice audpre_misc = {
 	.minor	= MISC_DYNAMIC_MINOR,
-	.name	= "msm_audpre",
+	.name	= "msm_preproc_ctl",
 	.fops	= &audpre_fops,
 };
 
 static int __init audpcm_in_init(void)
 {
-	the_audio_in.data = dma_alloc_coherent(NULL, DMASZ,
-					       &the_audio_in.phys, GFP_KERNEL);
-	MM_AUD_DBG("Memory addr = 0x%8x  phy addr = 0x%8x ---- \n", \
-		(int) the_audio_in.data, (int) the_audio_in.phys);
-
-	if (!the_audio_in.data) {
-		MM_AUD_ERR("audrec: Unable to allocate DMA buffer\n");
-		return -ENOMEM;
-	}
 
 	mutex_init(&the_audio_in.lock);
 	mutex_init(&the_audio_in.read_lock);
