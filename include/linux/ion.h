@@ -43,7 +43,7 @@ enum ion_heap_type {
 	ION_HEAP_TYPE_DMA,
 	ION_HEAP_TYPE_CUSTOM, /* must be last so device specific heaps always
 				 are at the end of this enum */
-	ION_NUM_HEAPS,
+	ION_NUM_HEAPS = 16,
 };
 
 #define ION_HEAP_SYSTEM_MASK		(1 << ION_HEAP_TYPE_SYSTEM)
@@ -515,13 +515,13 @@ struct ion_allocation_data {
 	struct ion_handle *handle;
 };
 
-struct ion_allocation_data_old {
+
+struct ion_allocation_data_compat {
 	size_t len;
 	size_t align;
 	unsigned int flags;
 	struct ion_handle *handle;
 };
-
 /**
  * struct ion_fd_data - metadata passed to/from userspace for a handle/fd pair
  * @handle:	a handle
@@ -557,6 +557,19 @@ struct ion_custom_data {
 	unsigned int cmd;
 	unsigned long arg;
 };
+
+struct ion_flush_data {
+        struct ion_handle *handle;
+        int fd;
+        void *vaddr;
+        unsigned int offset;
+        unsigned int length;
+};
+struct ion_flag_data {
+        struct ion_handle *handle;
+        unsigned long flags;
+};
+
 #define ION_IOC_MAGIC		'I'
 
 /**
@@ -567,9 +580,10 @@ struct ion_custom_data {
  */
 #define ION_IOC_ALLOC		_IOWR(ION_IOC_MAGIC, 0, \
 				      struct ion_allocation_data)
-#define ION_IOC_ALLOC_COMPAT	_IOWR(ION_IOC_MAGIC, 0, \
-				      struct ion_allocation_data_old)
 
+
+#define ION_IOC_ALLOC_COMPAT		_IOWR(ION_IOC_MAGIC, 0, \
+				      struct ion_allocation_data_compat)
 /**
  * DOC: ION_IOC_FREE - free memory
  *
@@ -606,6 +620,7 @@ struct ion_custom_data {
  * filed set to the corresponding opaque handle.
  */
 #define ION_IOC_IMPORT		_IOWR(ION_IOC_MAGIC, 5, struct ion_fd_data)
+#define ION_IOC_IMPORT_COMPAT		_IOWR(ION_IOC_MAGIC, 5, int)
 
 /**
  * DOC: ION_IOC_CUSTOM - call architecture specific ion ioctl
@@ -615,38 +630,13 @@ struct ion_custom_data {
  */
 #define ION_IOC_CUSTOM		_IOWR(ION_IOC_MAGIC, 6, struct ion_custom_data)
 
-
-/* For compat with old-API blobs. These were moved to the MSM header */
-/**
- * DOC: ION_IOC_CLEAN_CACHES - clean the caches
- *
- * Clean the caches of the handle specified.
- */
-#define ION_IOC_CLEAN_CACHES_COMPAT	_IOWR(ION_IOC_MAGIC, 7, \
-						struct ion_flush_data)
-/**
- * DOC: ION_MSM_IOC_INV_CACHES - invalidate the caches
- *
- * Invalidate the caches of the handle specified.
- */
-#define ION_IOC_INV_CACHES_COMPAT	_IOWR(ION_IOC_MAGIC, 8, \
-						struct ion_flush_data)
-/**
- * DOC: ION_MSM_IOC_CLEAN_CACHES - clean and invalidate the caches
- *
- * Clean and invalidate the caches of the handle specified.
- */
-#define ION_IOC_CLEAN_INV_CACHES_COMPAT	_IOWR(ION_IOC_MAGIC, 9, \
-						struct ion_flush_data)
-
-/**
- * DOC: ION_IOC_GET_FLAGS - get the flags of the handle
- *
- * Gets the flags of the current handle which indicate cachability,
- * secure state etc.
- */
-#define ION_IOC_GET_FLAGS_COMPAT	_IOWR(ION_IOC_MAGIC, 10, \
-						struct ion_flag_data)
-
+#define ION_IOC_CLEAN_CACHES_COMPAT    _IOWR(ION_IOC_MAGIC, 7, \
+                                                struct ion_flush_data)
+#define ION_IOC_INV_CACHES_COMPAT      _IOWR(ION_IOC_MAGIC, 8, \
+                                                struct ion_flush_data)
+#define ION_IOC_CLEAN_INV_CACHES_COMPAT       _IOWR(ION_IOC_MAGIC, 9, \
+                                                struct ion_flush_data)
+#define ION_IOC_GET_FLAGS_COMPAT               _IOWR(ION_IOC_MAGIC, 10, \
+                                                struct ion_flag_data)
 
 #endif /* _LINUX_ION_H */
