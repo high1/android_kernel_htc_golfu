@@ -15,7 +15,7 @@
 #include "mipi_ili9486.h"
 #include <asm/gpio.h>
 #include <mach/vreg.h>
-#include <mach/lge/board_v7.h>
+#include CONFIG_LGE_BOARD_HEADER_FILE
 #ifdef CONFIG_LGE_LCD_ESD_DETECTION
 #include <linux/hrtimer.h>
 #endif

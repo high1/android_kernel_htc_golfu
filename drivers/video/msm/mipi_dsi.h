@@ -47,12 +47,13 @@
 #define MIPI_DSI_PANEL_WVGA	1
 #define MIPI_DSI_PANEL_WVGA_PT	2
 #define MIPI_DSI_PANEL_FWVGA_PT	3
-#define MIPI_DSI_PANEL_WSVGA_PT	4
-#define MIPI_DSI_PANEL_QHD_PT 5
-#define MIPI_DSI_PANEL_WXGA	6
-#define MIPI_DSI_PANEL_WUXGA	7
-#define MIPI_DSI_PANEL_720P_PT	8
-#define DSI_PANEL_MAX	8
+#define MIPI_DSI_PANEL_HVGA_PT	4
+#define MIPI_DSI_PANEL_WSVGA_PT	5
+#define MIPI_DSI_PANEL_QHD_PT 6
+#define MIPI_DSI_PANEL_WXGA	7
+#define MIPI_DSI_PANEL_WUXGA	8
+#define MIPI_DSI_PANEL_720P_PT	9
+#define DSI_PANEL_MAX	9
 
 enum {		/* mipi dsi panel */
 	DSI_VIDEO_MODE,
@@ -294,7 +295,8 @@ void mipi_dsi_bist_ctrl(void);
 int mipi_dsi_buf_alloc(struct dsi_buf *, int size);
 int mipi_dsi_cmd_dma_add(struct dsi_buf *dp, struct dsi_cmd_desc *cm);
 int mipi_dsi_cmds_tx(struct dsi_buf *dp, struct dsi_cmd_desc *cmds, int cnt);
-
+int mipi_dsi_cmds_tx2(struct msm_fb_data_type *mfd,
+		struct dsi_buf *dp, struct dsi_cmd_desc *cmds, int cnt);
 int mipi_dsi_cmd_dma_tx(struct dsi_buf *dp);
 int mipi_dsi_cmd_reg_tx(uint32 data);
 int mipi_dsi_cmds_rx(struct msm_fb_data_type *mfd,

@@ -90,6 +90,15 @@ extern unsigned int maker_id;  //LGE_CHANGE, sohyun.nam@lge.com, 12-12-27, maker
 extern void mipi_ldp_lcd_hx8379a_panel_poweroff(void);
 #endif
 
+int mipi_status = 1;
+struct mutex cmdlock;
+int bl_level_prevset = 0;
+struct dsi_cmd_desc *mipi_power_on_cmd = NULL;
+struct dsi_cmd_desc *mipi_power_off_cmd = NULL;
+int mipi_power_on_cmd_size = 0;
+int mipi_power_off_cmd_size = 0;
+char ptype[60] = "Panel Type = ";
+
 static int mipi_dsi_off(struct platform_device *pdev)
 {
 	int ret = 0;

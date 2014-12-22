@@ -396,6 +396,7 @@ struct msm_cad_endpoints {
 	unsigned num;
 };
 
+
 #define MSM_MAX_DEC_CNT 14
 /* 7k target ADSP information */
 /* Bit 23:0, for codec identification like mp3, wav etc *
@@ -514,7 +515,6 @@ struct mddi_platform_data {
 struct mipi_dsi_platform_data {
 	int vsync_gpio;
 	int (*dsi_power_save)(int on);
-//	int (*esd_fixup)(uint32_t mfd_data);
 	int (*dsi_client_reset)(void);
 	int (*get_lane_config)(void);
 	char (*splash_is_enabled)(void);
@@ -546,14 +546,17 @@ struct mipi_dsi_panel_platform_data {
 	void (*gpio_set_backlight)(int bl_level);
 };
 
+
 #define PANEL_NAME_MAX_LEN 50
 struct msm_fb_platform_data {
 	int (*detect_client)(const char *name);
 	int mddi_prescan;
+	int (*allow_set_offset)(void);
+	int blt_mode;
 	uint32_t width;
 	uint32_t height;
+	bool     is_3d_panel;
 	unsigned char ext_resolution;
-	int (*allow_set_offset)(void);
 	char prim_panel_name[PANEL_NAME_MAX_LEN];
 	char ext_panel_name[PANEL_NAME_MAX_LEN];
 };
@@ -657,7 +660,7 @@ int  msm_add_sdcc(unsigned int controller,
 struct msm_usb_host_platform_data;
 int  msm_add_host(unsigned int host,
 		struct msm_usb_host_platform_data *plat);
-#if defined(CONFIG_USB_FUNCTION_MSM_HSUSB) || defined(CONFIG_USB_MSM_72K) || defined(CONFIG_USB_MSM_72K_MODULE)    || defined(CONFIG_USB_CI13XXX_MSM)
+#if defined(CONFIG_USB_FUNCTION_MSM_HSUSB) || defined(CONFIG_USB_MSM_72K) || defined(CONFIG_USB_MSM_72K_MODULE) || defined(CONFIG_USB_CI13XXX_MSM) || defined(CONFIG_USB_MSM_72K)
 int usb_get_connect_type(void);
 void msm_otg_set_vbus_state(int online);
 void msm_hsusb_set_vbus_state(int online);
