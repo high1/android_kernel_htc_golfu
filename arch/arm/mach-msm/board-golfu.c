@@ -2486,7 +2486,7 @@ static void __init golfu_init(void)
 
 
 	golfu_init_keypad();
-	msm_init_pmic_vibrator(3000);
+	msm_init_pmic_vibrator();
 
 	if (get_kernel_flag() & KERNEL_FLAG_PM_MONITOR) {
 		htc_monitor_init();

@@ -42,6 +42,7 @@
 
 #include "audmgr.h"
 
+#include <mach/msm_adsp.h>
 #include <mach/qdsp5/audio_acdb_def.h>
 #include <mach/qdsp5/qdsp5audpreproc.h>
 #include <mach/qdsp5/qdsp5audpreproccmdi.h>

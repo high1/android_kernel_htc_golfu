@@ -1,8 +1,4 @@
 # Makefile for the Linux device tree
-NOSTDINC_FLAGS := -I$(srctree)/include/compat/ \
-        -include $(srctree)/include/compat/linux/compat-2.6.h \
-        $(CFLAGS)
-
 obj-y			:= core.o sys.o bus.o dd.o syscore.o \
 			   driver.o class.o platform.o \
 			   cpu.o firmware.o init.o map.o devres.o \
@@ -11,6 +7,7 @@ obj-$(CONFIG_DEVTMPFS)	+= devtmpfs.o
 obj-y			+= power/
 obj-$(CONFIG_HAS_DMA)	+= dma-mapping.o
 obj-$(CONFIG_HAVE_GENERIC_DMA_COHERENT) += dma-coherent.o
+obj-$(CONFIG_DMA_SHARED_BUFFER) += dma-buf.o
 obj-$(CONFIG_GENLOCK) += genlock.o
 obj-$(CONFIG_ISA)	+= isa.o
 obj-$(CONFIG_FW_LOADER)	+= firmware_class.o

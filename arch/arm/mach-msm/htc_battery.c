@@ -88,7 +88,7 @@ tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec); \
 } while (0)
 
 /* rpc related */
-#if (defined(CONFIG_MACH_PRIMODD)||defined(CONFIG_MACH_PRIMODS)||defined(CONFIG_MACH_GOLFU))
+#if (defined(CONFIG_MACH_PRIMODD)||defined(CONFIG_MACH_PRIMODS)||defined(CONFIG_MACH_GOLFU)||defined(CONFIG_MACH_PICO))
 #define APP_BATT_PDEV_NAME		"rs30100001"
 #else
 #define APP_BATT_PDEV_NAME		"rs30100001:00000000"
@@ -128,6 +128,7 @@ struct htc_battery_info {
 	int gpio_adp_9v;
 	unsigned int option_flag;
 	int (*func_battery_charging_ctrl)(enum batt_ctl_t ctl);
+	int charger_re_enable;
 };
 
 static struct msm_rpc_endpoint *endpoint;
@@ -140,7 +141,6 @@ static unsigned int cache_time;
 static int htc_battery_initial = 0;
 static int htc_full_level_flag = 0;
 static int htc_is_DMB = 0;
-static int fast_charge = 0;
 
 static struct alarm batt_charger_ctrl_alarm;
 static struct work_struct batt_charger_ctrl_work;
@@ -291,7 +291,7 @@ static int __init enable_zcharge_setup(char *str)
 }
 __setup("enable_zcharge=", enable_zcharge_setup);
 
-int htc_is_cable_in(void)
+static int htc_is_cable_in(void)
 {
 	if (!htc_batt_info.update_time) {
 		BATT_ERR("%s: battery driver hasn't been initialized yet.", __func__);
@@ -619,14 +619,7 @@ static int htc_cable_status_update(int status)
 		with source = 1.
 	*/
 
-	if (htc_batt_info.guage_driver == GUAGE_DS2746) {
-		/* DS2746: It's not necessary to send uevent here. Just to let
-			userspace to know charging_source changes asap to
-			switch charging led indicator */
-		power_supply_changed(&htc_power_supplies[BATTERY_SUPPLY]);
-		if (htc_batt_debug_mask & HTC_BATT_DEBUG_UEVT)
-		BATT_LOG("(htc_cable_status_update)power_supply_changed: battery");
-	} else if (status == CHARGER_BATTERY) {
+	if (status == CHARGER_BATTERY) {
 		htc_set_smem_cable_type(CHARGER_BATTERY);
 		power_supply_changed(&htc_power_supplies[BATTERY_SUPPLY]);
 		if (htc_batt_debug_mask & HTC_BATT_DEBUG_UEVT)
@@ -1147,31 +1140,6 @@ static ssize_t htc_battery_show_batt_attr(struct device *dev,
 	return 0;
 }
 
-
-static ssize_t
-fast_charge_show(struct device *dev,
-        struct device_attribute *attr,
-        char *buf)
-{
-      return sprintf(buf, "%d\n", fast_charge);
-}
-
-static ssize_t
-fast_charge_store(struct device *dev,
-     struct device_attribute *attr, const char *buf, size_t size)
-{
-   int value;
-
-   value = ((int) simple_strtoul(buf, NULL, 10));
-   if(value == 0 || value == 1){
-    fast_charge = value;
-    BATT_LOG("set fast_charge %d", fast_charge);
-}
-else
-  return -EINVAL;
-
-return size;
-}
 /* -------------------------------------------------------------------------- */
 static int htc_power_get_property(struct power_supply *psy,
 				    enum power_supply_property psp,
@@ -1389,7 +1357,6 @@ static struct device_attribute htc_battery_attrs[] = {
 	__ATTR(smem_text, S_IRUGO, htc_battery_show_smem, NULL),
 #endif
 	__ATTR(batt_attr_text, S_IRUGO, htc_battery_show_batt_attr, NULL),
-        __ATTR(fast_charge, S_IRUGO|S_IWUSR, fast_charge_show, fast_charge_store),
 };
 
 enum {
@@ -2042,14 +2009,13 @@ static int handle_battery_call(struct msm_rpc_server *server,
 		}
 		if (htc_batt_debug_mask & HTC_BATT_DEBUG_M2A_RPC)
 			BATT_LOG("M2A_RPC: set_charging: %d", args->enable);
-		if (htc_batt_info.charger == SWITCH_CHARGER_TPS65200){
-                       if (args->enable == POWER_SUPPLY_ENABLE_SLOW_CHARGE && fast_charge){
-                          args->enable = POWER_SUPPLY_ENABLE_FAST_CHARGE;
-                          pr_info("[BATT]: %s() Force AC charge: %d\n",
-                          __func__, args->enable);
-                         }
+		if (htc_batt_info.charger == SWITCH_CHARGER_TPS65200) {
 			tps_set_charger_ctrl(args->enable);
-                      }
+			if (args->enable == CHECK_CHG && htc_batt_info.charger_re_enable) {
+				BATT_LOG("re-enable charger-> %d", htc_batt_info.rep.charging_enabled);
+				tps_set_charger_ctrl(htc_batt_info.rep.charging_enabled);
+			}
+		}
 		else if (htc_batt_info.charger == SWITCH_CHARGER)
 			blocking_notifier_call_chain(&cable_status_notifier_list,
 				args->enable, NULL);
@@ -2242,6 +2208,7 @@ static int htc_battery_probe(struct platform_device *pdev)
 	htc_batt_info.charger = pdata->charger;
 	htc_batt_info.option_flag = pdata->option_flag;
 	htc_batt_info.rep.full_level = 100;
+	htc_batt_info.charger_re_enable = pdata->charger_re_enable;
 
 	if (htc_batt_info.charger == LINEAR_CHARGER) {
 		htc_batt_info.gpio_mbat_in = pdata->gpio_mbat_in;
