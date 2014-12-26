@@ -66,7 +66,7 @@ struct mdp_reg golfu_color_enhancement[] = {
 int golfu_mdp_color_enhancement(void)
 {
 	PR_DISP_INFO("%s\n",__func__);
-//	mdp_color_enhancement(golfu_color_enhancement, ARRAY_SIZE(golfu_color_enhancement));
+	mdp_color_enhancement(golfu_color_enhancement, ARRAY_SIZE(golfu_color_enhancement));
 	return 0;
 }
 
@@ -139,9 +139,30 @@ static struct mipi_dsi_platform_data mipi_dsi_pdata = {
 #define PWM_ORISE_DEF		117
 #define PWM_ORISE_MIN		7
 #define PWM_ORISE_MAX		255
+static unsigned char golfu_shrink_pwm(int val)
+{
+	unsigned char shrink_br = BRI_SETTING_MAX;
+
+	if (val <= 0) {
+		shrink_br = 0;
+	} else if (val > 0 && (val < BRI_SETTING_MIN)) {
+			shrink_br = PWM_ORISE_MIN;
+	} else if ((val >= BRI_SETTING_MIN) && (val <= BRI_SETTING_DEF)) {
+			shrink_br = (val - BRI_SETTING_MIN) * (PWM_ORISE_DEF - PWM_ORISE_MIN) /
+		(BRI_SETTING_DEF - BRI_SETTING_MIN) + PWM_ORISE_MIN;
+	} else if (val > BRI_SETTING_DEF && val <= BRI_SETTING_MAX) {
+			shrink_br = (val - BRI_SETTING_DEF) * (PWM_ORISE_MAX - PWM_ORISE_DEF) /
+		(BRI_SETTING_MAX - BRI_SETTING_DEF) + PWM_ORISE_DEF;
+	} else if (val > BRI_SETTING_MAX)
+			shrink_br = PWM_ORISE_MAX;
+
+	/*PR_DISP_INFO("brightness orig=%d, transformed=%d\n", val, shrink_br);*/
+
+	return shrink_br;
+}
 
 static struct msm_panel_common_pdata mipi_golfu_panel_data = {
-//	.shrink_pwm = NULL,
+	.shrink_pwm = NULL,
 };
 
 static struct platform_device mipi_dsi_cmd_hvga_panel_device = {
@@ -195,10 +216,9 @@ static struct platform_device msm_fb_device = {
 };
 
 static struct msm_panel_common_pdata mdp_pdata = {
-	.cont_splash_enabled = 0x00,
 	.gpio = 97,
 	.mdp_rev = MDP_REV_303,
-	//.mdp_color_enhance = golfu_mdp_color_enhancement,
+	.mdp_color_enhance = golfu_mdp_color_enhancement,
 };
 
 static void __init msm_fb_add_devices(void)
@@ -234,7 +254,7 @@ int __init golfu_init_panel(void)
 	PR_DISP_INFO("panel_type= 0x%x\n", panel_type);
 	PR_DISP_INFO("%s: %s\n", __func__, mipi_dsi_cmd_hvga_panel_device.name);
 
-//	mipi_golfu_panel_data.shrink_pwm = golfu_shrink_pwm;
+	mipi_golfu_panel_data.shrink_pwm = golfu_shrink_pwm;
 
 
 	ret = platform_device_register(&msm_fb_device);
