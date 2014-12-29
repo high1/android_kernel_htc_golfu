@@ -72,6 +72,7 @@ extern boolean mdp_is_hist_valid;
 #define MDPOP_SHARPENING	BIT(11) /* enable sharpening */
 #define MDPOP_BLUR		BIT(12) /* enable blur */
 #define MDPOP_FG_PM_ALPHA       BIT(13)
+#define MDPOP_LAYER_IS_FG	BIT(14)
 #define MDP_ALLOC(x)  kmalloc(x, GFP_KERNEL)
 
 struct mdp_buf_type {
@@ -786,4 +787,5 @@ static inline int mdp4_overlay_dsi_state_get(void)
 }
 #endif
 
+u32 mdp_get_panel_framerate(struct msm_fb_data_type *mfd);
 #endif /* MDP_H */

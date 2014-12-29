@@ -71,6 +71,17 @@
 						struct msmfb_data)
 #define MSMFB_WRITEBACK_TERMINATE _IO(MSMFB_IOCTL_MAGIC, 155)
 #define MSMFB_MDP_PP _IOWR(MSMFB_IOCTL_MAGIC, 156, struct msmfb_mdp_pp)
+#define MSMFB_OVERLAY_VSYNC_CTRL _IOW(MSMFB_IOCTL_MAGIC, 160, unsigned int)
+#define MSMFB_VSYNC_CTRL _IOW(MSMFB_IOCTL_MAGIC, 161, unsigned int)
+#define MSMFB_BUFFER_SYNC _IOW(MSMFB_IOCTL_MAGIC, 162, struct mdp_buf_sync)
+#define MSMFB_OVERLAY_COMMIT _IO(MSMFB_IOCTL_MAGIC, 163)
+#define MSMFB_DISPLAY_COMMIT _IOW(MSMFB_IOCTL_MAGIC, 164, \
+struct mdp_display_commit)
+#define MSMFB_METADATA_SET _IOW(MSMFB_IOCTL_MAGIC, 165, struct msmfb_metadata)
+#define MSMFB_METADATA_GET _IOW(MSMFB_IOCTL_MAGIC, 166, struct msmfb_metadata)
+#define MSMFB_WRITEBACK_SET_MIRRORING_HINT _IOW(MSMFB_IOCTL_MAGIC, 167, \
+unsigned int)
+#define MSMFB_ASYNC_BLIT _IOW(MSMFB_IOCTL_MAGIC, 168, unsigned int)
 
 /* HTC: Define custom ioctl started from 200 */
 #define MSMFB_OVERLAY_CHANGE_ZORDER_VG_PIPES    _IOW(MSMFB_IOCTL_MAGIC, 200, unsigned int)
@@ -141,6 +152,7 @@ enum {
 #define MDP_DITHER 0x8
 #define MDP_BLUR 0x10
 #define MDP_BLEND_FG_PREMULT 0x20000
+#define MDP_IS_FG 0x40000
 #define MDP_DEINTERLACE 0x80000000
 #define MDP_SHARPENING  0x40000000
 #define MDP_NO_DMA_BARRIER_START	0x20000000
@@ -349,6 +361,32 @@ enum {
 	MDP_BLOCK_MAX,
 };
 
+/*
+ * mdp_histogram_start_req is used to provide the parameters for
+ * histogram start request
+ */
+
+struct mdp_histogram_start_req {
+	uint32_t block;
+	uint8_t frame_cnt;
+	uint8_t bit_mask;
+	uint8_t num_bins;
+};
+
+/*
+ * mdp_histogram_data is used to return the histogram data, once
+ * the histogram is done/stopped/cance
+ */
+
+struct mdp_histogram_data {
+	uint32_t block;
+	uint8_t bin_cnt;
+	uint32_t *c0;
+	uint32_t *c1;
+	uint32_t *c2;
+	uint32_t *extra_info;
+};
+
 struct mdp_pcc_coeff {
 	uint32_t c, r, g, b, rr, gg, bb, rg, gb, rb, rgb_0, rgb_1;
 };
@@ -414,6 +452,13 @@ struct mdp_hist_lut_data {
 	uint32_t *data;
 };
 
+struct mdp_pa_cfg {
+	uint32_t flags;
+	uint32_t hue_adj;
+	uint32_t sat_adj;
+	uint32_t val_adj;
+	uint32_t cont_adj;
+};
 
 struct mdp_lut_cfg_data {
 	uint32_t lut_type;
@@ -424,11 +469,43 @@ struct mdp_lut_cfg_data {
 	} data;
 };
 
+struct mdp_bl_scale_data {
+	uint32_t min_lvl;
+	uint32_t scale;
+};
+
+struct mdp_calib_config_data {
+	uint32_t ops;
+	uint32_t addr;
+	uint32_t data;
+};
+
+struct mdp_pa_cfg_data {
+	uint32_t block;
+	struct mdp_pa_cfg pa_data;
+};
+
 enum {
 	mdp_op_pcc_cfg,
 	mdp_op_csc_cfg,
 	mdp_op_lut_cfg,
+	mdp_op_qseed_cfg,
+	mdp_bl_scale_cfg,
+	mdp_op_calib_cfg,
+	mdp_op_pa_cfg,
 	mdp_op_max,
+};
+
+struct mdp_qseed_cfg {
+	uint32_t table_num;
+	uint32_t ops;
+	uint32_t len;
+	uint32_t *data;
+};
+
+struct mdp_qseed_cfg_data {
+	uint32_t block;
+	struct mdp_qseed_cfg qseed_data;
 };
 
 struct msmfb_mdp_pp {
@@ -437,6 +514,10 @@ struct msmfb_mdp_pp {
 		struct mdp_pcc_cfg_data pcc_cfg_data;
 		struct mdp_csc_cfg_data csc_cfg_data;
 		struct mdp_lut_cfg_data lut_cfg_data;
+		struct mdp_qseed_cfg_data qseed_cfg_data;
+		struct mdp_bl_scale_data bl_scale_data;
+		struct mdp_calib_config_data calib_cfg;
+		struct mdp_pa_cfg_data pa_cfg_data;
 	} data;
 };
 
@@ -454,7 +535,7 @@ struct mdp_mixer_info {
 	int z_order;
 };
 
-#define MAX_PIPE_PER_MIXER  4
+#define MAX_PIPE_PER_MIXER  5
 
 struct msmfb_mixer_info_req {
 	int mixer_num;
@@ -467,11 +548,69 @@ struct msmfb_usb_projector_info {
 	int latest_offset;
 };
 
+enum {
+	DISPLAY_SUBSYSTEM_ID,
+	ROTATOR_SUBSYSTEM_ID,
+};
+
+enum {
+	MDP_WRITEBACK_MIRROR_OFF,
+	MDP_WRITEBACK_MIRROR_ON,
+	MDP_WRITEBACK_MIRROR_PAUSE,
+	MDP_WRITEBACK_MIRROR_RESUME,
+};
+
+struct mdp_blend_cfg {
+	uint32_t is_premultiplied;
+};
+
+enum {
+	metadata_op_none,
+	metadata_op_base_blend,
+	metadata_op_frame_rate,
+	metadata_op_max
+};
+
+struct msmfb_metadata {
+	uint32_t op;
+	uint32_t flags;
+	union {
+		struct mdp_blend_cfg blend_cfg;
+		uint32_t panel_frame_rate;
+	} data;
+};
+
+#define MDP_MAX_FENCE_FD	32
+#define MDP_BUF_SYNC_FLAG_WAIT	1
+
+struct mdp_buf_sync {
+	uint32_t flags;
+	uint32_t acq_fen_fd_cnt;
+        uint32_t session_id;
+	int *acq_fen_fd;
+	int *rel_fen_fd;
+	int *retire_fen_fd;
+};
+
+struct mdp_async_blit_req_list {
+	struct mdp_buf_sync sync;
+	uint32_t count;
+	struct mdp_blit_req req[];
+};
+
+#define MDP_DISPLAY_COMMIT_OVERLAY 0x00000001
+
+struct mdp_display_commit {
+	uint32_t flags;
+	uint32_t wait_for_finish;
+	struct fb_var_screeninfo var;
+};
+
 #ifdef __KERNEL__
 
 /* get the framebuffer physical address information */
-int get_fb_phys_info(unsigned long *start, unsigned long *len, int fb_num);
-struct fb_info *msm_fb_get_writeback_fb(void);
+int get_fb_phys_info(unsigned long *start, unsigned long *len, int fb_num,
+	int subsys_id);
 int msm_fb_writeback_init(struct fb_info *info);
 
 /* The QCT latest code base is used, adding on 2/9/2012 */
