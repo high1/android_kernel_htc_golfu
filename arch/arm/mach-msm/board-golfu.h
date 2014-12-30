@@ -25,6 +25,7 @@ int __init golfu_wifi_init(void);
 #define MSM_MEM_SIZE		0x20000000
 
 #define MSM_LINUX_BASE_OFFSET	0x03000000
+//#define MSM_LINUX_BASE_OFFSET	0x02C00000 // 44 mB
 
 /* MSM_MM_HEAP_SIZE
  * = MSM_FB_SIZE
@@ -42,8 +43,17 @@ int __init golfu_wifi_init(void);
 #define MSM_RAM_CONSOLE_BASE    0x2FD00000
 #define MSM_RAM_CONSOLE_SIZE    MSM_HTC_RAM_CONSOLE_SIZE
 
-#define MSM_PMEM_MDP_SIZE       0x01400000
-#define MSM_PMEM_ADSP_SIZE      0x00D00000
+//#define MSM_PMEM_MDP_SIZE 0x1000000 /* (16 mB) */
+//#define MSM_PMEM_ADSP_SIZE 0x1000000 /* (16 mB) */
+//#define MSM_PMEM_AUDIO_SIZE 0x0100000 /* (1 mB) */
+#define MSM_PMEM_MDP_SIZE       0x1000000 /* (16 mB) */
+#define MSM_PMEM_ADSP_SIZE      0x1000000 /* (16 mB) */
+#define MSM_PMEM_AUDIO_SIZE     0x0100000 /* (1 mB) */
+
+#define PMEM_KERNEL_EBI1_SIZE	0x3A000
+
+//#define MSM_PMEM_MDP_SIZE       0x01400000
+//#define MSM_PMEM_ADSP_SIZE      0x00D00000
 
 #define GOLFU__GPIO_TO_INT(x)       (x+64) /* from gpio_to_irq */
 
@@ -145,3 +155,4 @@ int __init golfu_wifi_init(void);
 #define GOLFU_GPIO_NFC_DL	(7)
 
 #endif /* GUARD */
+

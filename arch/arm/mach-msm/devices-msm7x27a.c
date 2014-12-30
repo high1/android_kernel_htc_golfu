@@ -13,7 +13,7 @@
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
-#include <linux/msm_kgsl.h>
+#include <mach/kgsl.h>
 #include <linux/regulator/machine.h>
 #include <mach/irqs.h>
 #include <mach/msm_iomap.h>
@@ -230,6 +230,21 @@ struct platform_device msm_device_smd = {
 	.id	= -1,
 };
 
+static struct resource resources_adsp[] = {
+	{
+		.start  = INT_ADSP_A9_A11,
+		.end    = INT_ADSP_A9_A11,
+		.flags  = IORESOURCE_IRQ,
+	},
+};
+
+struct platform_device msm_adsp_device = {
+	.name           = "msm_adsp",
+	.id             = -1,
+	.num_resources  = ARRAY_SIZE(resources_adsp),
+	.resource       = resources_adsp,
+};
+
 static struct resource resources_uart1[] = {
 	{
 		.start	= INT_UART1,
@@ -345,35 +360,13 @@ static struct resource msm_uart2dm_resources[] = {
 		.end	= INT_UART2DM_IRQ,
 		.flags	= IORESOURCE_IRQ,
 	},
-	{
-		.start = INT_UART2DM_RX,
-		.end   = INT_UART2DM_RX,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.start = DMOV_HSUART2_TX_CHAN,
-		.end   = DMOV_HSUART2_RX_CHAN,
-		.name  = "uartdm_channels",
-		.flags = IORESOURCE_DMA,
-	},
-	{
-		.start = DMOV_HSUART2_TX_CRCI,
-		.end   = DMOV_HSUART2_RX_CRCI,
-		.name  = "uartdm_crci",
-		.flags = IORESOURCE_DMA,
-	},
 };
 
-static u64 msm_uart_dm2_dma_mask = DMA_BIT_MASK(32);
 struct platform_device msm_device_uart_dm2 = {
-	.name	= "msm_serial_hs",
-	.id	= 1,
+	.name	= "msm_serial_hsl",
+	.id	= 0,
 	.num_resources	= ARRAY_SIZE(msm_uart2dm_resources),
 	.resource	= msm_uart2dm_resources,
-	.dev	= {
-		.dma_mask		= &msm_uart_dm2_dma_mask,
-		.coherent_dma_mask	= DMA_BIT_MASK(32),
-	},
 };
 
 #define MSM_NAND_PHYS		0xA0A00000
@@ -671,7 +664,7 @@ static struct platform_device msm_lcdc_device = {
 	.name   = "lcdc",
 	.id     = 0,
 };
-#ifdef CONFIG_MSM_KGSL_ADRENO200
+
 static struct resource kgsl_3d0_resources[] = {
 	{
 		.name  = KGSL_3D0_REG_MEMORY,
@@ -731,7 +724,7 @@ void __init msm7x25a_kgsl_3d0_init(void)
 		kgsl_3d0_pdata.pwrlevel[1].bus_freq = 0;
 	}
 }
-#endif
+
 static void __init msm_register_device(struct platform_device *pdev, void *data)
 {
 	int ret;

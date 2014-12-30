@@ -1,6 +1,9 @@
 #
 # Makefile for the kernel multimedia device drivers.
 #
+NOSTDINC_FLAGS := -I$(srctree)/include/compat/ \
+        -include $(srctree)/include/compat/linux/compat-2.6.h \
+        $(CFLAGS)
 
 media-objs	:= media-device.o media-devnode.o media-entity.o
 

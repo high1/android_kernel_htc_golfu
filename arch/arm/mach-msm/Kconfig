@@ -104,7 +104,7 @@ config ARCH_MSM8960
 	select HAS_QDSS
 	select MSM_L2_SPM
 	select MSM_NATIVE_RESTART
-        select DONT_MAP_HOLE_AFTER_MEMBANK0
+    select DONT_MAP_HOLE_AFTER_MEMBANK0
 	select MSM_REMOTE_SPINLOCK_SFPB
 	select ARCH_POPULATES_NODE_MAP
 	select ARCH_SPARSEMEM_ENABLE
@@ -204,8 +204,6 @@ config  ARCH_MSM_KRAITMP
 
 config  ARCH_MSM_CORTEX_A5
 	bool
-	select PERF_EVENTS if !ARCH_MSM9615
-	select HAVE_HW_BREAKPOINT if !ARCH_MSM9615
 	select HAVE_HW_BRKPT_RESERVED_RW_ACCESS
 
 config ARCH_MSM7X27A
@@ -236,44 +234,6 @@ config MSM_REMOTE_SPINLOCK_SFPB
 	bool
 config MSM_ADM3
 	bool
-
-config PERFLOCK
-        depends on CPU_FREQ
-        depends on ARCH_MSM8960 || ARCH_MSM8X60 || ARCH_QSD8X50 || ARCH_MSM7X30 || ARCH_MSM7X00A || ARCH_MSM7X27A || ARCH_MSM7X25
-        default n
-        bool "HTC Performance Lock"
-
-config PERFLOCK_BOOT_LOCK
-        depends on PERFLOCK
-        depends on ARCH_MSM8960 || ARCH_MSM8X60 || ARCH_QSD8X50 || ARCH_MSM7X30 || ARCH_MSM7X00A || ARCH_MSM7X27A || ARCH_MSM7X25
-        default n
-        bool "Boot Time Performance Lock"
-
-config PERFLOCK_SCREEN_POLICY
-        depends on PERFLOCK
-        depends on ARCH_MSM8960 || ARCH_MSM8X60 || ARCH_QSD8X50 || ARCH_MSM7X00A || ARCH_MSM7X27A || ARCH_MSM7X25
-        default n
-        bool "Change Cpufreq Policy while Screen ON/OFF"
-
-config PERFLOCK_SCREEN_ON_MIN
-        depends on PERFLOCK_SCREEN_POLICY
-        int "Minimum speed while screen on"
-        default MSM_CPU_FREQ_ONDEMAND_MIN
-
-config PERFLOCK_SCREEN_ON_MAX
-        depends on PERFLOCK_SCREEN_POLICY
-        int "Maximum speed while screen on"
-        default MSM_CPU_FREQ_ONDEMAND_MAX
-
-config PERFLOCK_SCREEN_OFF_MIN
-        depends on PERFLOCK_SCREEN_POLICY
-        int "Minimum speed while screen off"
-        default MSM_CPU_FREQ_ONDEMAND_MIN
-
-config PERFLOCK_SCREEN_OFF_MAX
-        depends on PERFLOCK_SCREEN_POLICY
-        int "Maximum speed while screen off"
-        default MSM_CPU_FREQ_ONDEMAND_MIN
 
 menu "MSM Board Selection"
 
@@ -354,6 +314,24 @@ config MACH_PICO
 		bool "Pico"
 		help
 			Support for Pico (PDA phone).
+
+config PICO_NAND_RESIZE_PART
+		depends on MACH_PICO
+		bool "Repartition NAND Devices on Pico"
+		default n
+		help
+			dynamically resize the system partiton by obtaining
+			32 mB from userdata partition, and 48 mB from the
+			cache partition, and hax the partition table as soon
+			as the information is got from ATAG.
+
+config PICO_RESIZE_MEM_ALLOC
+		depends on MACH_PICO
+		bool "Resize memory allocations on Pico"
+		default n
+		help
+			resize the current memory allocation heaps to gain
+			*some* more free RAM for userspace
 
 config MACH_GOLFU
 		depends on ARCH_MSM7X27A
@@ -1239,6 +1217,10 @@ config BUILD_OMA_DM
 	help
 	  For OMA-DM we need to do some additional fixes.
 
+config BUILD_FOR_AOSP
+	default n
+	bool "Build Kernel for AOSP based ROMs"
+
 config QSD_SVS
 	bool "QSD Static Voltage Scaling"
 	depends on (MACH_QSD8X50_SURF || MACH_QSD8X50_FFA)
@@ -1600,31 +1582,33 @@ config MSM_DALRPC_TEST
 if CPU_FREQ_MSM
 
 config MSM_CPU_FREQ_SET_MIN_MAX
-	bool "Set Min/Max CPU frequencies."
-	default n
-	help
-	  Allow setting min and max CPU frequencies. Sysfs can be used
-	  to override these values.
+        bool "Set Min/Max CPU frequencies."
+        default n
+        help
+          Allow setting min and max CPU frequencies. Sysfs can be used
+          to override these values.
 
 config MSM_CPU_FREQ_MAX
-	int "Max CPU Frequency"
-	depends on MSM_CPU_FREQ_SET_MIN_MAX
-	default 384000
+        int "Max CPU Frequency"
+        depends on MSM_CPU_FREQ_SET_MIN_MAX
+        default 600000
 
 config MSM_CPU_FREQ_MIN
-	int "Min CPU Frequency"
+        int "Min CPU Frequency"
+        depends on MSM_CPU_FREQ_SET_MIN_MAX
+        default 245760
+
+config MSM7X27A_OVERCLOCK
+	bool "Enable overclock for MSM7X27A"
+	depends on (MACH_PICO || MACH_GOLFU)
 	depends on MSM_CPU_FREQ_SET_MIN_MAX
-	default 245760
+	default n
+	help
+	  Enable overclock for MSM7X27A. Make sure to set
+	  CONFIG_MSM_CPU_FREQ_MAX to 600000.
+	  If unsure, choose N.
 
 endif # CPU_FREQ_MSM
-
-config MSM_CPU_FREQ_ONDEMAND_MAX
-        int "Max"
-        default 384000
-
-config MSM_CPU_FREQ_ONDEMAND_MIN
-        int "Min"
-        default 245760
 
 config MSM_CPU_AVS
 	bool "Enable software controlled Adaptive Voltage Scaling (AVS)"

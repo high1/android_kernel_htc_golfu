@@ -36,7 +36,7 @@ extern struct dsi_cmd_desc *mipi_power_off_cmd;
 extern int mipi_power_on_cmd_size;
 extern int mipi_power_off_cmd_size;
 extern char ptype[60];
-extern int htc_is_cable_in(void);
+//extern int htc_is_cable_in(void);
 
 static struct msm_panel_common_pdata *mipi_orise_pdata;
 
@@ -860,12 +860,12 @@ static void mipi_orise_bkl_switch(struct msm_fb_data_type *mfd, bool on) {
 		 * postpone brightness setting when cable exists which means ready to onchg mode,
 		 * it can avoid the resume flash screen problem before onchg mode
 		 */
-		if(htc_is_cable_in()) {
-			golfu_mfd = mfd;
-			queue_delayed_work(golfu_backlight_wq, &golfu_backlight_work, 50);
-		} else {
+// 		if(htc_is_cable_in()) {
+// 			golfu_mfd = mfd;
+// 			queue_delayed_work(golfu_backlight_wq, &golfu_backlight_work, 50);
+// 		} else {
 			mipi_dsi_set_backlight(mfd);
-		}
+// 		}
 	} else {
 		mipi_status = 0;
 	}
