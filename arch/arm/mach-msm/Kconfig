@@ -1598,13 +1598,14 @@ config MSM_CPU_FREQ_MIN
         depends on MSM_CPU_FREQ_SET_MIN_MAX
         default 245760
 
-config MSM_CPU_FREQ_OVERCLOCK
-	bool "Overclock the CPU frequency (Golfu/Pico)"
+config MSM7X27A_OVERCLOCK
+	bool "Enable overclock for MSM7X27A"
 	depends on (MACH_PICO || MACH_GOLFU)
 	depends on MSM_CPU_FREQ_SET_MIN_MAX
 	default n
 	help
-	  Adds a number of overclocked frequencies for the 600MHz HTC Explorer/Pico.
+	  Enable overclock for MSM7X27A. Make sure to set
+	  CONFIG_MSM_CPU_FREQ_MAX to 600000.
 	  If unsure, choose N.
 
 endif # CPU_FREQ_MSM
