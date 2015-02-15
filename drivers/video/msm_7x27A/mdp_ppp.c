@@ -1283,9 +1283,21 @@ int get_img(struct mdp_img *img, struct mdp_blit_req *req,
 {
 	int put_needed, fb_num, ret = 0;
 	struct file *file;
-#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
+#ifdef CONFIG_ION_MSM
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
+#else
+	unsigned long vstart;
 #endif
+
+	if (img->memory_id & 0x40000000) {
+		struct fb_info *fb = registered_fb[img->memory_id & 0x0000FFFF];
+		if (fb) {
+			*start = fb->fix.smem_start;
+			*len = fb->fix.smem_len;
+		}
+		*srcp_file = NULL;
+		return 0;
+	}
 
 	if (req->flags & MDP_MEMORY_ID_TYPE_FB) {
 		file = fget_light(img->memory_id, &put_needed);
@@ -1307,7 +1319,8 @@ int get_img(struct mdp_img *img, struct mdp_blit_req *req,
 			fput_light(file, put_needed);
 		}
 	}
-#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
+
+#ifdef CONFIG_ION_MSM
 		*srcp_ihdl = ion_import_dma_buf(mfd->iclient, img->memory_id);
 		if (IS_ERR_OR_NULL(*srcp_ihdl))
 			return PTR_ERR(*srcp_ihdl);
@@ -1316,15 +1329,22 @@ int get_img(struct mdp_img *img, struct mdp_blit_req *req,
 			return ret;
 		 else
 			return -EINVAL;
+#else
+	if (!get_pmem_file(img->memory_id, start, &vstart, len, filep))
+		return 0;
+	else
+		return -1;
 #endif
-
 }
 
 void put_img(struct file *p_src_file, struct ion_handle *p_ihdl)
 {
-#ifdef CONFIG_MSM_MULTIMEDIA_USE_ION
+#ifdef CONFIG_ION_MSM
 	if (!IS_ERR_OR_NULL(p_ihdl))
 		ion_free(ppp_display_iclient, p_ihdl);
+#else
+	if (p_src_file)
+		put_pmem_file(p_src_file);
 #endif
 }
 
@@ -1371,9 +1391,8 @@ static int mdp_ppp_blit_addr(struct fb_info *info, struct mdp_blit_req *req,
 
 	iBuf.mdpImg.width = req->src.width;
 	iBuf.mdpImg.imgType = req->src.format;
-
-
 	iBuf.mdpImg.bmy_addr = (uint32 *) (srcp0_start + req->src.offset);
+
 	if (iBuf.mdpImg.imgType == MDP_Y_CBCR_H2V2_ADRENO)
 		iBuf.mdpImg.cbcr_addr =
 			(uint32 *) ((uint32) iBuf.mdpImg.bmy_addr +
