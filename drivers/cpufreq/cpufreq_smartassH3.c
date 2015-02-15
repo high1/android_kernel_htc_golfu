@@ -1,5 +1,5 @@
 /*
- * drivers/cpufreq/cpufreq_smartass2.c
+ * drivers/cpufreq/cpufreq_smartassH3.c
  *
  * Copyright (C) 2010 Google, Inc.
  *
@@ -18,6 +18,8 @@
  * which was adaptated to 2.6.29 kernel by Nadlabak (pavel@doshaska.net)
  *
  * SMP support based on mod by faux123
+ *
+ * ZTE Skate specific tweaks by H3ROS @ MoDaCo, integrated by C3C0 @ MoDaCo
  *
  * For a general overview of smartassV2 see the relavent part in
  * Documentation/cpu-freq/governors.txt
@@ -45,7 +47,7 @@
  * towards the ideal frequency and slower after it has passed it. Similarly,
  * lowering the frequency towards the ideal frequency is faster than below it.
  */
-#define DEFAULT_AWAKE_IDEAL_FREQ 480000
+#define DEFAULT_AWAKE_IDEAL_FREQ 600000
 static unsigned int awake_ideal_freq;
 
 /*
@@ -62,7 +64,7 @@ static unsigned int sleep_ideal_freq;
  * Zero disables and causes to always jump straight to max frequency.
  * When below the ideal freqeuncy we always ramp up to the ideal freq.
  */
-#define DEFAULT_RAMP_UP_STEP 200000
+#define DEFAULT_RAMP_UP_STEP 128000
 static unsigned int ramp_up_step;
 
 /*
@@ -70,19 +72,19 @@ static unsigned int ramp_up_step;
  * Zero disables and will calculate ramp down according to load heuristic.
  * When above the ideal freqeuncy we always ramp down to the ideal freq.
  */
-#define DEFAULT_RAMP_DOWN_STEP 200000
+#define DEFAULT_RAMP_DOWN_STEP 128000
 static unsigned int ramp_down_step;
 
 /*
  * CPU freq will be increased if measured load > max_cpu_load;
  */
-#define DEFAULT_MAX_CPU_LOAD 90
+#define DEFAULT_MAX_CPU_LOAD 50
 static unsigned long max_cpu_load;
 
 /*
  * CPU freq will be decreased if measured load < min_cpu_load;
  */
-#define DEFAULT_MIN_CPU_LOAD 70
+#define DEFAULT_MIN_CPU_LOAD 25
 static unsigned long min_cpu_load;
 
 /*
@@ -115,7 +117,7 @@ static unsigned int sample_rate_jiffies;
 /*
  * Boost enabled
  */
-#define DEFAULT_BOOST_ENABLED 1
+#define DEFAULT_BOOST_ENABLED 0
 static unsigned int boost_enabled;
 
 /*
@@ -126,7 +128,9 @@ static unsigned int boost_enabled;
 static unsigned long boost_pulse;
 static u64 boost_pulse_time;
 
+
 /*************** End of tunables ***************/
+
 
 static void (*pm_idle_old)(void);
 static atomic_t active_count = ATOMIC_INIT(0);
@@ -172,15 +176,15 @@ enum {
  */
 static unsigned long debug_mask;
 
-static int cpufreq_governor_smartass(struct cpufreq_policy *policy,
+static int cpufreq_governor_smartass_h3(struct cpufreq_policy *policy,
 		unsigned int event);
 
-#ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_SMARTASS2
+#ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_SMARTASSH3
 static
 #endif
-struct cpufreq_governor cpufreq_gov_smartass2 = {
-	.name = "smartassV2",
-	.governor = cpufreq_governor_smartass,
+struct cpufreq_governor cpufreq_gov_smartass_h3 = {
+	.name = "SmartassH3",
+	.governor = cpufreq_governor_smartass_h3,
 	.max_transition_latency = 9000000,
 	.owner = THIS_MODULE,
 };
@@ -765,10 +769,10 @@ static struct attribute * smartass_attributes[] = {
 
 static struct attribute_group smartass_attr_group = {
 	.attrs = smartass_attributes,
-	.name = "smartass",
+	.name = "smartassH3",
 };
 
-static int cpufreq_governor_smartass(struct cpufreq_policy *new_policy,
+static int cpufreq_governor_smartass_h3(struct cpufreq_policy *new_policy,
 		unsigned int event)
 {
 	unsigned int cpu = new_policy->cpu;
@@ -953,10 +957,10 @@ static int __init cpufreq_smartass_init(void)
 
 	register_early_suspend(&smartass_power_suspend);
 
-	return cpufreq_register_governor(&cpufreq_gov_smartass2);
+	return cpufreq_register_governor(&cpufreq_gov_smartass_h3);
 }
 
-#ifdef CONFIG_CPU_FREQ_DEFAULT_GOV_SMARTASS2
+#ifdef CONFIG_CPU_FREQ_DEFAULT_GOV_SMARTASSH3
 fs_initcall(cpufreq_smartass_init);
 #else
 module_init(cpufreq_smartass_init);
@@ -964,13 +968,14 @@ module_init(cpufreq_smartass_init);
 
 static void __exit cpufreq_smartass_exit(void)
 {
-	cpufreq_unregister_governor(&cpufreq_gov_smartass2);
+	cpufreq_unregister_governor(&cpufreq_gov_smartass_h3);
 	destroy_workqueue(up_wq);
 	destroy_workqueue(down_wq);
 }
 
 module_exit(cpufreq_smartass_exit);
 
-MODULE_AUTHOR ("Erasmux");
-MODULE_DESCRIPTION ("'cpufreq_smartass2' - A smart cpufreq governor");
+MODULE_AUTHOR ("Erasmux, moded by H3ROS & C3C0");
+MODULE_DESCRIPTION ("'cpufreq_smartassH3' - A smart cpufreq governor");
 MODULE_LICENSE ("GPL");
+
